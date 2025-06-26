@@ -6,7 +6,9 @@
  */
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const glob = require('glob');
+const httpContext = require('express-http-context');
 const Account = require('./utils/globals/Account');
 require('dotenv').config();
 
@@ -33,6 +35,7 @@ const app = express();
   global.Account = Account;
   
   // Middleware
+  app.use(httpContext.middleware);
   app.use(cors());
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
@@ -40,9 +43,9 @@ const app = express();
   app.use(require('./global'));
   
   // API Documentation
-  glob.sync('./src/routes/**/*.js').forEach((file) => {
+  glob.sync(path.join(__dirname, 'routes/**/*.js')).forEach((file) => {
     try {
-      app.use(require(path.resolve(file)));
+      app.use(require(file));      // mounts every router it finds
     } catch (err) {
       console.log(file, err);
     }

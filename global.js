@@ -12,7 +12,9 @@ router.all('*',
         '/v1/session-posts',
         '/v1/hand-posts',
         '/v1/webhook',
-        '/v1/comments-and-likes'
+        '/v1/comments-and-likes',
+        // '/api/hands'
+        
       ],
     },
   ),
@@ -28,7 +30,8 @@ router.all('*',
     ];
     if (publicPaths.includes(path)) return next();
 
-    const { sub } = req.user;
+    const { sub } = req.auth;
+    console.log('sub', sub);
     const user = await Users.findOneByQuery({ user_id: sub });
     if (!user) return res.status(400).json({ message: 'Invalid user' });
     Account._setUser(user);
