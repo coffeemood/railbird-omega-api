@@ -108,6 +108,15 @@ router.post(
     const { total, pageData } = fileUploads;
     const totalPages = Math.ceil(total / pageSize);
 
+    for (let i = 0; i < pageData.length; i++) {
+      const session = pageData[i];
+      const stats = await FileUploads.getSessionStatistics(session._id);
+      pageData[i] = {
+        ...session,
+        ...stats,
+      };
+    }
+
     const data = {
       pageData,
       total,
@@ -125,11 +134,29 @@ router.get(
     const ownerId = Account.userId();
     if (exampleSessions.includes(_id)) {
       const fileUpload = await FileUploads.findOneByQuery({ _id, ownerId: { $exists: true } });
-      return res.status(200).json({ status: 'success', fileUpload });
+      // Get session progression data
+      const progression = await FileUploads.getSessionProgression(_id);
+      return res.status(200).json({ 
+        status: 'success', 
+        fileUpload: {
+          ...fileUpload,
+          progression
+        }
+      });
     }
     const fileUpload = await FileUploads.findOneByQuery({ _id, ownerId });
     if (!fileUpload) return res.status(400).json({ message: 'We could not find the requested file' });
-    return res.status(200).json({ status: 'success', fileUpload });
+    
+    // Get session progression data
+    const progression = await FileUploads.getSessionProgression(_id);
+    
+    return res.status(200).json({ 
+      status: 'success', 
+      fileUpload: {
+        ...fileUpload,
+        progression
+      }
+    });
   }
 );
 

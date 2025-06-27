@@ -17,7 +17,7 @@ const fileUploadSchema = {
   title: String,
   description: String,
   tags: Array, // array of strings
-  privacy: String, // private, social, public -- This is used for sharable links
+  privacy: String, // private, social, public -- This is used for sharable links (matches frontend isPrivate)
   playedOn: Number,
   noHands: Number,
   room: Array,
@@ -25,7 +25,8 @@ const fileUploadSchema = {
   createdAt: Number,
   sessionStart: Number,
   sessionEnd: Number,
-  heroWinLoss: String,
+  heroWinLoss: String, // Cash game winnings in BB
+  winning: String, // NEW: MTT tournament winnings in $ (from frontend)
   status: String, // uploading, failed, processing, processed
   meta: Object,
 };
@@ -117,6 +118,45 @@ class FileUploads extends SuperCollection {
       allInEV,
     };
     // return hand;
+  }
+
+  async getSessionProgression(id) {
+    const session = await this.findById(id);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    // Get all hands for this session sorted by hand order
+    const hands = await Hands.aggregate([
+      { $match: { sourceFile: id } },
+      { $sort: { indexInCollection: 1 } },
+      {
+        $project: {
+          _id: 0,
+          indexInCollection: 1,
+          playerChips: 1,
+          info: 1,
+        }
+      }
+    ]);
+
+    if (!hands.length || hands.every(hand => !hand.playerChips.find(pc => pc.hero))) {
+      return [];
+    }
+
+    // Calculate running profit/loss
+    const progression = [0]; // Start at 0
+    let runningTotal = 0;
+
+    hands.forEach((hand) => {
+      const heroChip = hand.playerChips.find(pc => pc.hero);
+      if (heroChip) {
+        runningTotal += heroChip.winLossBB || 0;
+        progression.push(parseFloat(runningTotal.toFixed(2)));
+      }
+    });
+
+    return progression;
   }
 }
 

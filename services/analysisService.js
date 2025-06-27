@@ -1,5 +1,5 @@
 /**
- * Poker hand analysis service
+ * Poker hand analysis service - FOR TESTING PURPOSES ONLY
  * Provides functions for retrieving random nodes and analyzing hands
  */
 const cardUtils = require('../utils/cardUtils');
