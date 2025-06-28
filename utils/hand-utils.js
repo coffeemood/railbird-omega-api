@@ -1,4 +1,7 @@
 
+const {
+  evaluateDraw, getBestHand, getFlopType, getIsPaired, getFlopArchetype
+} = require('./solver');
 
 function convertHandHistoryToText(hand) {
     const {
@@ -123,7 +126,7 @@ function convertHandHistoryToText(hand) {
   
             // Get made hand strength using accumulated board
             const allCards = [ ...heroCards, ...currentBoard ];
-            console.log(allCards);
+            // console.log(allCards);
             const bestHand = getBestHand(allCards);
             strengthInfo += `\nMade Hand: ${bestHand}`;
           }

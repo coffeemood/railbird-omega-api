@@ -5,6 +5,7 @@ const s3 = require('../utils/s3');
 const FileUploads = require('../db/collections/FileUploads');
 const Hands = require('../db/collections/Hands');
 const Users = require('../db/collections/Users');
+const { generateHandTitles, storeHandTitles } = require('../services/titleGenerationService');
 /* -- File Uploads schema --
   ownerId: String,
   fileName: String,
@@ -302,4 +303,77 @@ router.delete(
     return res.status(200).json({ status: 'success', data: { handCount } });
   }
 );
+
+// Test endpoint for section 1.3 - Title Generation
+router.post(
+  '/v1/sessions/:id/generate-titles',
+  async (req, res) => {
+    try {
+      const sessionId = +req.params.id;
+      const { modelType = 'cerebras', limit = 10 } = req.body;
+      const ownerId = Account.userId();
+
+      // Verify session exists and user has access
+      const session = await FileUploads.findOneByQuery({ 
+        _id: sessionId, 
+        ownerId: exampleSessions.includes(sessionId) ? { $exists: true } : ownerId 
+      });
+      
+      if (!session) {
+        return res.status(404).json({ 
+          status: 'error', 
+          message: 'Session not found or access denied' 
+        });
+      }
+
+      // Get hands from the session (limited for testing)
+      const hands = await Hands.findByQuery(
+        { 
+          sourceFile: sessionId,
+          'info.isVPIP': true,
+          ownerId: exampleSessions.includes(sessionId) ? { $exists: true } : ownerId
+        },
+        { 
+          limit: Math.min(limit, 20), // Cap at 20 for testing
+          sort: { indexInCollection: 1 }
+        }
+      );
+
+      if (!hands || hands.length === 0) {
+        return res.status(400).json({ 
+          status: 'error', 
+          message: 'No hands found in this session' 
+        });
+      }
+
+      console.log(`Generating titles for ${hands.length} hands from session ${sessionId} using ${modelType}`);
+
+      // Generate titles using the service
+      const handTitles = await generateHandTitles(hands, modelType);
+
+      // Store titles in database
+      await storeHandTitles(handTitles);
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          sessionId,
+          handCount: hands.length,
+          titles: handTitles,
+          modelUsed: modelType
+        },
+        message: `Successfully generated ${handTitles.length} hand titles`
+      });
+
+    } catch (error) {
+      console.error('Error in generate-titles endpoint:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Internal server error while generating titles',
+        error: error.message
+      });
+    }
+  }
+);
+
 module.exports = router;

@@ -205,10 +205,7 @@ const grok = new OpenAI({
 });
 
 const { promisify } = require('util');
-const s3Helper = require('./s3');
-const {
-  evaluateDraw, getBestHand, getFlopType, getIsPaired, getFlopArchetype
-} = require('./solver');
+
 
 const sleep = promisify(setTimeout);
 

@@ -2,6 +2,19 @@
 # yarn lockfile v1
 
 
+"@cerebras/cerebras_cloud_sdk@^1.35.0":
+  version "1.35.0"
+  resolved "https://registry.yarnpkg.com/@cerebras/cerebras_cloud_sdk/-/cerebras_cloud_sdk-1.35.0.tgz#4eb45daaca76b120124244e583b4408ca09a3809"
+  integrity sha512-bQ6KYHmcvudHJ1aLzqkeETn3Y071/8/zpcZho6g4pKZ+VluHvLmIG0buhrwF9qJY5WSLmXR/s4pruxVRmfV7yQ==
+  dependencies:
+    "@types/node" "^18.11.18"
+    "@types/node-fetch" "^2.6.4"
+    abort-controller "^3.0.0"
+    agentkeepalive "^4.2.1"
+    form-data-encoder "1.7.2"
+    formdata-node "^4.3.2"
+    node-fetch "^2.6.7"
+
 "@colors/colors@1.5.0":
   version "1.5.0"
   resolved "https://registry.npmjs.org/@colors/colors/-/colors-1.5.0.tgz"
