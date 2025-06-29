@@ -158,6 +158,8 @@ function convertHandHistoryToText(hand) {
   
   ${getActionSummary(hand)}
   
+  Outcome: Hero ${info.heroWinningBB > 0 ? 'won' : 'lost'} ${info.heroWinningBB}BB
+  Spoilers: ${(hand.spoilers || []).map(spoiler => `${spoiler.pos}: ${spoiler.cards.card1}, ${spoiler.cards.card2}`).join(', ')}
   To remind you, Hero has ${preflopSummary.cards.card1} ${preflopSummary.cards.card2} ${getHeroHandArchetype()}`;
   }
 

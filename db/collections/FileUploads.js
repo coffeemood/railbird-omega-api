@@ -29,6 +29,7 @@ const fileUploadSchema = {
   winning: String, // NEW: MTT tournament winnings in $ (from frontend)
   status: String, // uploading, failed, processing, processed
   meta: Object,
+  milestones: Array, // NEW: Array of milestone objects { title, time, type, value, details, handId? }
 };
 
 /**

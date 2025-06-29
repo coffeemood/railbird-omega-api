@@ -6,6 +6,7 @@ const FileUploads = require('../db/collections/FileUploads');
 const Hands = require('../db/collections/Hands');
 const Users = require('../db/collections/Users');
 const { generateHandTitles, storeHandTitles } = require('../services/titleGenerationService');
+const { generateSessionMilestones, storeMilestones } = require('../services/milestoneGenerationService');
 /* -- File Uploads schema --
   ownerId: String,
   fileName: String,
@@ -141,7 +142,8 @@ router.get(
         status: 'success', 
         fileUpload: {
           ...fileUpload,
-          progression
+          progression,
+          milestones: fileUpload.milestones || []
         }
       });
     }
@@ -155,7 +157,8 @@ router.get(
       status: 'success', 
       fileUpload: {
         ...fileUpload,
-        progression
+        progression,
+        milestones: fileUpload.milestones || []
       }
     });
   }
@@ -370,6 +373,82 @@ router.post(
       return res.status(500).json({
         status: 'error',
         message: 'Internal server error while generating titles',
+        error: error.message
+      });
+    }
+  }
+);
+
+// Milestone Generation endpoint
+router.post(
+  '/v1/sessions/:id/generate-milestones',
+  async (req, res) => {
+    try {
+      const sessionId = +req.params.id;
+      const { modelType = 'cerebras' } = req.body;
+      const ownerId = Account.userId();
+
+      // Verify session exists and user has access
+      const session = await FileUploads.findOneByQuery({ 
+        _id: sessionId, 
+        ownerId: exampleSessions.includes(sessionId) ? { $exists: true } : ownerId 
+      });
+      
+      if (!session) {
+        return res.status(404).json({ 
+          status: 'error', 
+          message: 'Session not found or access denied' 
+        });
+      }
+
+      // Always regenerate milestones (removed check for existing milestones)
+
+      // Get all hands for this session for milestone generation
+      const hands = await Hands.findByQuery(
+        { 
+          sourceFile: sessionId,
+          ownerId: exampleSessions.includes(sessionId) ? { $exists: true } : ownerId
+        },
+        { 
+          sort: { indexInCollection: 1 }
+        }
+      );
+
+      if (!hands || hands.length === 0) {
+        return res.status(400).json({ 
+          status: 'error', 
+          message: 'No hands found in this session' 
+        });
+      }
+
+      console.log(`Generating milestones for session ${sessionId} with ${hands.length} hands using ${modelType}`);
+
+      // Generate milestones using the service with Pusher streaming
+      const milestones = await generateSessionMilestones(session, hands, modelType, ownerId);
+
+      // Store milestones in database
+      await storeMilestones(sessionId, milestones);
+
+      // Get count of significant hands that got LLM processing
+      const significantHandsCount = milestones.filter(m => m.handId).length;
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          sessionId,
+          milestones,
+          totalMilestones: milestones.length,
+          significantHandsProcessed: significantHandsCount,
+          modelUsed: modelType
+        },
+        message: `Successfully generated ${milestones.length} milestones (${significantHandsCount} significant hands)`
+      });
+
+    } catch (error) {
+      console.error('Error in generate-milestones endpoint:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Internal server error while generating milestones',
         error: error.message
       });
     }
