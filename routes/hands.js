@@ -12,6 +12,7 @@ const { analyzePokerHand } = require('../utils/analysis');
 const FileUploads = require('../db/collections/FileUploads');
 const Users = require('../db/collections/Users');
 const pusher = require('../utils/pusher');
+const { generateSnapshots } = require('../utils/solver-snapshot-generator');
 
 const potSizesRules = {
   '0-10bb': { $lte: 10 },
@@ -243,6 +244,49 @@ router.post(
       return res.status(500).json({
         status: 'error',
         message: 'Failed to analyze hand'
+      });
+    }
+  }
+);
+
+router.post(
+  '/v1/hands/:id/generate-snapshots',
+  async (req, res) => {
+    try {
+      const ownerId = Account.userId();
+      const _id = +req.params.id;
+
+      // Find the hand and verify ownership
+      const hand = await Hands.findOneByQuery({ _id, ownerId });
+      if (!hand) {
+        return res.status(400).json({ message: 'Invalid hand or unauthorized access' });
+      }
+
+      // Generate snapshots for the hand
+      const snapshots = generateSnapshots(hand);
+      
+      // Extract just the snapshot inputs for the response
+      const snapshotInputs = snapshots.map(snapshot => ({
+        index: snapshot.index,
+        primaryVillain: snapshot.primaryVillain,
+        heroAction: snapshot.decisionPoint.heroAction.action?.type,
+        snapshotInput: snapshot.snapshotInput
+      }));
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          handId: _id,
+          totalSnapshots: snapshotInputs.length,
+          snapshots: snapshotInputs
+        }
+      });
+    } catch (error) {
+      console.error('Error generating snapshots:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to generate snapshots',
+        error: error.message
       });
     }
   }
