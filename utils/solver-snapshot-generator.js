@@ -283,17 +283,17 @@ function determinePositions(hand, heroSeatIndex, villainSeatIndex) {
   // If position not found, use seat index as fallback
   if (heroOrder === -1 || villainOrder === -1) {
     if (heroSeatIndex > villainSeatIndex) {
-      return { ip: heroPos, oop: villainPos };
+      return { ip: heroPos, oop: villainPos, heroRelativePosition: 'ip' };
     } else {
-      return { ip: villainPos, oop: heroPos };
+      return { ip: villainPos, oop: heroPos, heroRelativePosition: 'oop' };
     }
   }
   
   // Higher order means acts later (is IP)
   if (heroOrder > villainOrder) {
-    return { ip: heroPos, oop: villainPos };
+    return { ip: heroPos, oop: villainPos, heroRelativePosition: 'ip' };
   } else {
-    return { ip: villainPos, oop: heroPos };
+    return { ip: villainPos, oop: heroPos, heroRelativePosition: 'oop' };
   }
 }
 
@@ -360,6 +360,13 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
   const gameType = header.gametype === 'tournament' ? 'mtt' : 'cash';
   const potType = hand.info?.potType || 'srp';
   
+  // Determine who's next to act (hero)
+  const heroPosition = positions.heroRelativePosition; // This should be 'ip' or 'oop'
+  
+  // Get hero's hole cards
+  const heroCards = hand.preflopSummary?.cards;
+  const heroHand = heroCards ? `${heroCards.card1}${heroCards.card2}` : null;
+  
   return {
     street: state.street,
     board: state.board,
@@ -371,7 +378,9 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
     },
     action_history: cumulativeActions,
     game_type: gameType,
-    pot_type: potType
+    pot_type: potType,
+    next_to_act: heroPosition, // Add this field
+    heroCards: heroHand // Add hero's hole cards
   };
 }
 

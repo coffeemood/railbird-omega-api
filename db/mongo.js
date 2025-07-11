@@ -28,7 +28,11 @@ class Mongo {
           this.client = await MongoClient.connect(process.env.DB_STRING, { 
             useNewUrlParser: true, 
             useUnifiedTopology: true, 
-            serverApi: ServerApiVersion.v1 
+            serverApi: {
+              version: ServerApiVersion.v1,
+              strict: false,
+              deprecationErrors: false,
+            }
           });
           this.dbInstance = this.client.db(process.env.DB_NAME);
           this.isInitialized = true;

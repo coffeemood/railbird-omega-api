@@ -15,6 +15,7 @@
     "@dicebear/core": "^9.2.2",
     "@google/generative-ai": "^0.24.1",
     "@mistralai/mistralai": "^1.7.2",
+    "@pinecone-database/pinecone": "^3.1.0",
     "@tiptap/core": "^2.11.5",
     "@tiptap/extension-focus": "^2.11.5",
     "@tiptap/react": "^2.11.5",
@@ -39,6 +40,7 @@
     "pusher": "^5.2.0",
     "random-hash": "^4.0.1",
     "react-avataaars": "^0.2.3",
+    "simple-zstd": "^1.4.2",
     "swagger-ui-express": "^5.0.0",
     "zod": "^3.25.67"
   },

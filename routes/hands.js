@@ -13,6 +13,8 @@ const FileUploads = require('../db/collections/FileUploads');
 const Users = require('../db/collections/Users');
 const pusher = require('../utils/pusher');
 const { generateSnapshots } = require('../utils/solver-snapshot-generator');
+const { findSimilarNode } = require('../utils/vectorSearch');
+const { processSnapshotWithSolverData } = require('../utils/solverNodeService');
 
 const potSizesRules = {
   '0-10bb': { $lte: 10 },
@@ -255,6 +257,7 @@ router.post(
     try {
       const ownerId = Account.userId();
       const _id = +req.params.id;
+      const performSearch = req.query.performSearch === 'true';
 
       // Find the hand and verify ownership
       const hand = await Hands.findOneByQuery({ _id, ownerId });
@@ -265,20 +268,43 @@ router.post(
       // Generate snapshots for the hand
       const snapshots = generateSnapshots(hand);
       
-      // Extract just the snapshot inputs for the response
-      const snapshotInputs = snapshots.map(snapshot => ({
-        index: snapshot.index,
-        primaryVillain: snapshot.primaryVillain,
-        heroAction: snapshot.decisionPoint.heroAction.action?.type,
-        snapshotInput: snapshot.snapshotInput
-      }));
+      // Process snapshots with optional vector search
+      const processedSnapshots = await Promise.all(
+        snapshots.map(async (snapshot) => {
+          const result = {
+            index: snapshot.index,
+            primaryVillain: snapshot.primaryVillain,
+            heroAction: snapshot.decisionPoint.heroAction.action?.type,
+            snapshotInput: snapshot.snapshotInput
+          };
+
+          // Perform vector search if requested
+          if (performSearch) {
+            try {
+              const vectorSearchResult = await findSimilarNode(snapshot.snapshotInput);
+              result.vectorSearchResult = vectorSearchResult;
+              result.hasMatch = vectorSearchResult !== null;
+              result.similarityScore = vectorSearchResult?.similarityScore || 0;
+              result.approxMultiWay = vectorSearchResult === null || vectorSearchResult.isApproximation;
+            } catch (searchError) {
+              console.error('Vector search error for snapshot:', searchError);
+              result.vectorSearchError = searchError.message;
+              result.hasMatch = false;
+              result.approxMultiWay = true;
+            }
+          }
+
+          return result;
+        })
+      );
 
       return res.status(200).json({
         status: 'success',
         data: {
           handId: _id,
-          totalSnapshots: snapshotInputs.length,
-          snapshots: snapshotInputs
+          totalSnapshots: processedSnapshots.length,
+          vectorSearchPerformed: performSearch,
+          snapshots: processedSnapshots
         }
       });
     } catch (error) {
@@ -286,6 +312,207 @@ router.post(
       return res.status(500).json({
         status: 'error',
         message: 'Failed to generate snapshots',
+        error: error.message
+      });
+    }
+  }
+);
+
+router.post(
+  '/v1/hands/:id/analyze-snapshots',
+  async (req, res) => {
+    try {
+      const ownerId = Account.userId();
+      const _id = +req.params.id;
+      const batchSize = parseInt(req.query.batchSize) || 5; // Allow configurable batch size
+
+      // Find the hand and verify ownership
+      const hand = await Hands.findOneByQuery({ _id, ownerId });
+      if (!hand) {
+        return res.status(400).json({ 
+          status: 'error',
+          message: 'Invalid hand or unauthorized access' 
+        });
+      }
+
+      // Generate snapshots for the hand
+      const snapshots = generateSnapshots(hand);
+      
+      if (snapshots.length === 0) {
+        return res.status(200).json({
+          status: 'success',
+          data: {
+            handId: _id,
+            stats: {
+              totalSnapshots: 0,
+              matchedSnapshots: 0,
+              averageSimilarity: 0,
+              errors: 0
+            },
+            snapshots: []
+          }
+        });
+      }
+
+      // Process snapshots in batches for better performance and memory management
+      const analyzedSnapshots = [];
+      let totalErrors = 0;
+
+      for (let i = 0; i < snapshots.length; i += batchSize) {
+        const batch = snapshots.slice(i, i + batchSize);
+        
+        // Process batch in parallel
+        const batchResults = await Promise.allSettled(
+          batch.map(async (snapshot) => {
+            try {
+              // Perform vector search
+              const vectorSearchResult = await findSimilarNode(snapshot.snapshotInput);
+              
+              // Create snapshot with vector search result
+              const snapshotWithSearch = {
+                ...snapshot,
+                vectorSearchResult
+              };
+
+              // Process with solver data using efficient Rust pipeline
+              const enrichedSnapshot = await processSnapshotWithSolverData(snapshotWithSearch);
+              
+              // Convert action frequencies from fractions back to actual amounts
+              if (enrichedSnapshot.solver?.optimalStrategy?.actionFrequencies) {
+                const potBB = snapshot.snapshotInput.pot_bb;
+                const bbSize = hand.header?.bb || 1;
+                const potChips = potBB * bbSize;
+                
+                enrichedSnapshot.solver.optimalStrategy.actionFrequencies = 
+                  enrichedSnapshot.solver.optimalStrategy.actionFrequencies.map(af => {
+                    // Parse action string like "Bet 0.75x" or "Raise 1.20x"
+                    const match = af.action.match(/^(Bet|Raise)\s+([\d.]+)x$/);
+                    if (match) {
+                      const actionType = match[1];
+                      const fraction = parseFloat(match[2]);
+                      const amountChips = Math.round(fraction * potChips);
+                      const amountBB = amountChips / bbSize;
+                      return {
+                        ...af,
+                        action: `${actionType} ${amountBB}`,
+                        actionOriginal: af.action
+                      };
+                    }
+                    return af;
+                  });
+                
+                // Also update recommended action
+                if (enrichedSnapshot.solver.optimalStrategy.recommendedAction) {
+                  const recAction = enrichedSnapshot.solver.optimalStrategy.recommendedAction;
+                  const match = recAction.action.match(/^(Bet|Raise)\s+([\d.]+)x$/);
+                  if (match) {
+                    const actionType = match[1];
+                    const fraction = parseFloat(match[2]);
+                    const amountChips = Math.round(fraction * potChips);
+                    const amountBB = amountChips / bbSize;
+                    enrichedSnapshot.solver.optimalStrategy.recommendedAction = {
+                      ...recAction,
+                      action: `${actionType} ${amountBB}`,
+                      actionOriginal: recAction.action
+                    };
+                  }
+                }
+              }
+              
+              return {
+                index: snapshot.index,
+                street: snapshot.snapshotInput.street,
+                primaryVillain: snapshot.primaryVillain,
+                primaryVillainPosition: snapshot.primaryVillainPosition,
+                heroAction: snapshot.decisionPoint.heroAction.action?.type || 'Unknown',
+                heroCards: snapshot.snapshotInput.heroCards,
+                board: snapshot.snapshotInput.board,
+                potBB: snapshot.snapshotInput.pot_bb,
+                stackBB: snapshot.snapshotInput.stack_bb,
+                hasMatch: vectorSearchResult !== null,
+                similarityScore: vectorSearchResult?.similarityScore || 0,
+                approxMultiWay: enrichedSnapshot.approxMultiWay,
+                solver: enrichedSnapshot.solver,
+                error: enrichedSnapshot.error
+              };
+            } catch (error) {
+              console.error(`Error analyzing snapshot ${snapshot.index}:`, error);
+              totalErrors++;
+              return {
+                index: snapshot.index,
+                street: snapshot.snapshotInput?.street || 'Unknown',
+                primaryVillain: snapshot.primaryVillain,
+                primaryVillainPosition: snapshot.primaryVillainPosition,
+                heroAction: snapshot.decisionPoint?.heroAction?.action?.type || 'Unknown',
+                heroCards: snapshot.snapshotInput?.heroCards,
+                board: snapshot.snapshotInput?.board || [],
+                potBB: snapshot.snapshotInput?.pot_bb || 0,
+                stackBB: snapshot.snapshotInput?.stack_bb || 0,
+                hasMatch: false,
+                similarityScore: 0,
+                approxMultiWay: true,
+                solver: null,
+                error: error.message
+              };
+            }
+          })
+        );
+
+        // Extract results from settled promises
+        const batchSnapshots = batchResults.map(result => 
+          result.status === 'fulfilled' ? result.value : result.reason
+        );
+        
+        analyzedSnapshots.push(...batchSnapshots);
+
+        // Add a small delay between batches to prevent overwhelming the system
+        if (i + batchSize < snapshots.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      // Calculate comprehensive summary statistics
+      const matchedSnapshots = analyzedSnapshots.filter(s => s.hasMatch);
+      const snapshotsWithSimilarity = analyzedSnapshots.filter(s => s.similarityScore > 0);
+      
+      const stats = {
+        totalSnapshots: analyzedSnapshots.length,
+        matchedSnapshots: matchedSnapshots.length,
+        matchRate: analyzedSnapshots.length > 0 ? (matchedSnapshots.length / analyzedSnapshots.length * 100).toFixed(1) : 0,
+        averageSimilarity: snapshotsWithSimilarity.length > 0 
+          ? (snapshotsWithSimilarity.reduce((sum, s) => sum + s.similarityScore, 0) / snapshotsWithSimilarity.length).toFixed(3)
+          : 0,
+        highConfidenceMatches: matchedSnapshots.filter(s => s.similarityScore > 0.8).length,
+        errors: totalErrors,
+        streetBreakdown: {
+          PREFLOP: analyzedSnapshots.filter(s => s.street === 'PREFLOP').length,
+          FLOP: analyzedSnapshots.filter(s => s.street === 'FLOP').length,
+          TURN: analyzedSnapshots.filter(s => s.street === 'TURN').length,
+          RIVER: analyzedSnapshots.filter(s => s.street === 'RIVER').length
+        }
+      };
+
+      // Sort snapshots by index for consistent ordering
+      analyzedSnapshots.sort((a, b) => a.index - b.index);
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          handId: _id,
+          stats,
+          snapshots: analyzedSnapshots,
+          meta: {
+            processedAt: new Date().toISOString(),
+            batchSize,
+            totalBatches: Math.ceil(snapshots.length / batchSize)
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error analyzing snapshots:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to analyze snapshots',
         error: error.message
       });
     }
