@@ -12,6 +12,9 @@ const {
 // Import buildFeatureVector to generate query vector
 const { buildFeatureVector } = require('./vectorSearch');
 
+// Import Solves collection for flop nodes
+const Solves = require('../db/collections/Solves');
+
 /**
  * Solver Node Service Module
  * Implements Phase 3.2 and 3.3 of the solver integration checklist
@@ -101,6 +104,7 @@ async function getUnpackedNode(leanNodeMeta) {
  * @returns {Promise<Object>} SolverBlock directly without intermediate conversions
  */
 async function getUnpackedAndTransformedNode(leanNodeMeta, snapshotInput, similarityScore = 1.0, heroHand = null) {
+  console.log({ leanNodeMeta })
   if (!leanNodeMeta || !leanNodeMeta.s3_key) {
     throw new Error('Invalid LeanNodeMeta: missing s3_key');
   }
@@ -129,18 +133,8 @@ async function getUnpackedAndTransformedNode(leanNodeMeta, snapshotInput, simila
     // also save the compressed data to a file
     fs.writeFileSync(`compressedData_${snapshotInput.street}.zstd`, compressedData);
 
-    // Import the removeClosingActions helper from vectorSearch
-    const { removeClosingActions } = require('./vectorSearch');
-    
-    // Create a modified snapshot with cleaned action history to match corpus
-    // This ensures consistency between Pinecone search and local Rust matching
-    const modifiedSnapshot = {
-      ...snapshotInput,
-      action_history: removeClosingActions(snapshotInput.action_history, snapshotInput.street)
-    };
-
     // Build feature vector using the modified snapshot and pad to 512 dimensions
-    const originalVector = buildFeatureVector(modifiedSnapshot);
+    const originalVector = buildFeatureVector(snapshotInput);
     const queryVector512 = [...originalVector];
     
     // Pad with zeros to reach 512 dimensions
@@ -154,13 +148,21 @@ async function getUnpackedAndTransformedNode(leanNodeMeta, snapshotInput, simila
     // Call Rust function with modified snapshot that has cleaned action history
     const solverBlockJson = unpackAndTransformNode(
       compressedData,
-      JSON.stringify(modifiedSnapshot),
+      JSON.stringify(snapshotInput),
       queryVector512,
       heroHandFromSnapshot
     );
-    
 
-    return JSON.parse(solverBlockJson);
+    const result = JSON.parse(solverBlockJson);
+
+    if (snapshotInput.street === 'TURN' && !result.optimalStrategy?.actionFrequencies?.length) {
+      // Use fallback metadata
+      result.optimalStrategy = JSON.parse(leanNodeMeta.optimal_strategy);
+      delete result.rangeAdvantage  // combo data error
+      delete result.handFeatures;
+    }
+
+    return result;
 
   } catch (error) {
     console.error('Error in efficient unpack and transform:', error);
@@ -237,7 +239,7 @@ function transformNodeToSolverBlock(compactNodeAnalysis, snapshot, similaritySco
 
 /**
  * Process a snapshot with vector search result
- * Fetches the node from S3 and transforms it to frontend format
+ * Fetches the node from MongoDB (for flop) or S3 (for turn/river) and transforms it to frontend format
  * @param {Object} snapshot - Snapshot with vector search result
  * @returns {Promise<Object>} Enriched snapshot with solver data
  */
@@ -254,23 +256,62 @@ async function processSnapshotWithSolverData(snapshot) {
   }
 
   try {
-    // Extract hero hand from snapshot if available
-    const heroHand = snapshotInput.heroCards ? 
-      `${snapshotInput.heroCards[0]}${snapshotInput.heroCards[1]}` : null;
+    const street = snapshotInput.street?.toUpperCase();
+    let solverBlock;
 
-    // Use the most efficient approach: fetch, decompress, decode, and transform in Rust
-    const solverBlock = await getUnpackedAndTransformedNode(
-      vectorSearchResult.nodeMetadata,
-      snapshotInput,
-      vectorSearchResult.similarityScore || 1.0,
-      heroHand
-    );
+    if (street === 'FLOP') {
+      // For FLOP nodes, fetch from MongoDB using the original_id from vector search
+      const nodeId = vectorSearchResult.nodeMetadata.original_id || 
+                     vectorSearchResult.nodeMetadata._id;
+      
+      if (!nodeId) {
+        throw new Error('No node ID found in vector search result for flop node');
+      }
+
+      const flopNode = await Solves.findFlopNodeById(nodeId);
+      
+      if (!flopNode) {
+        throw new Error(`Flop node not found in MongoDB: ${nodeId}`);
+      }
+
+      // Transform the flop node to solver block format (now async)
+      solverBlock = await Solves.transformFlopNode(flopNode);
+      
+      // Add similarity score and approximation flag
+      solverBlock.sim = vectorSearchResult.similarityScore || 1.0;
+
+      console.log({ vectorSearchResult });
+      
+    } else if (street === 'TURN' || street === 'RIVER') {
+      // For TURN/RIVER nodes, use the S3/zst flow
+      const heroHand = snapshotInput.heroCards ? 
+        `${snapshotInput.heroCards[0]}${snapshotInput.heroCards[1]}` : null;
+
+      // For TURN nodes, add the node_identifier to enable direct lookup in Rust
+      // Note: Rust expects snake_case field names
+      if (street === 'TURN' && vectorSearchResult.nodeMetadata.node_identifier) {
+        snapshotInput.node_identifier = vectorSearchResult.nodeMetadata.node_identifier;
+        console.log('Using node_identifier for TURN node direct lookup:', snapshotInput.node_identifier);
+      }
+
+      // Use the most efficient approach: fetch, decompress, decode, and transform in Rust
+      solverBlock = await getUnpackedAndTransformedNode(
+        vectorSearchResult.nodeMetadata,
+        snapshotInput,
+        vectorSearchResult.similarityScore || 1.0,
+        heroHand
+      );
+    } else {
+      throw new Error(`Unsupported street: ${street}`);
+    }
 
     return {
       ...snapshot,
       solver: solverBlock,
       approxMultiWay: vectorSearchResult.isApproximation || false,
-      similarityScore: vectorSearchResult.similarityScore
+      similarityScore: vectorSearchResult.similarityScore,
+      matchType: vectorSearchResult.nodeMetadata.matchType || 'exact',
+      parentDepth: vectorSearchResult.nodeMetadata.parentDepth
     };
 
   } catch (error) {

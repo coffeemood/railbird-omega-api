@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { decodeCompactNode, encodeNodeToCompact, decompressZstd, compressZstd, buildFeatureVector, extractBoardTextureJs, batchBuildFeatureVectors, cosineSimilarity, leanMetaToFeatureVector, canonicalizeActionHistory, calculateActionHash, formatActionStringJs, generateRangeStats, calculateActionFrequenciesJs, parseActionString, canonicalizeActionTokens, analyzeSnapshot, transformCompactToSolverBlock, calculateRangeAdvantageApi, calculateBlockerImpactApi, analyzeBoardTextureApi, analyzeHandFeatures, analyzeRangeComplete, decodeCompressedNode, unpackAndTransformNode } = nativeBinding
+const { decodeCompactNode, encodeNodeToCompact, decompressZstd, compressZstd, buildFeatureVector, extractBoardTextureJs, batchBuildFeatureVectors, cosineSimilarity, generateActionSequence, leanMetaToFeatureVector, canonicalizeActionHistory, calculateActionHash, formatActionStringJs, generateRangeStats, calculateActionFrequenciesJs, parseActionString, canonicalizeActionTokens, analyzeSnapshot, transformCompactToSolverBlock, calculateRangeAdvantageApi, calculateBlockerImpactApi, analyzeBoardTextureApi, analyzeHandFeatures, analyzeRangeComplete, decodeCompressedNode, unpackAndTransformNode, calculateRangeEquity } = nativeBinding
 
 module.exports.decodeCompactNode = decodeCompactNode
 module.exports.encodeNodeToCompact = encodeNodeToCompact
@@ -320,6 +320,7 @@ module.exports.buildFeatureVector = buildFeatureVector
 module.exports.extractBoardTextureJs = extractBoardTextureJs
 module.exports.batchBuildFeatureVectors = batchBuildFeatureVectors
 module.exports.cosineSimilarity = cosineSimilarity
+module.exports.generateActionSequence = generateActionSequence
 module.exports.leanMetaToFeatureVector = leanMetaToFeatureVector
 module.exports.canonicalizeActionHistory = canonicalizeActionHistory
 module.exports.calculateActionHash = calculateActionHash
@@ -337,3 +338,4 @@ module.exports.analyzeHandFeatures = analyzeHandFeatures
 module.exports.analyzeRangeComplete = analyzeRangeComplete
 module.exports.decodeCompressedNode = decodeCompressedNode
 module.exports.unpackAndTransformNode = unpackAndTransformNode
+module.exports.calculateRangeEquity = calculateRangeEquity

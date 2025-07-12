@@ -1,16 +1,19 @@
-const { Pinecone } = require('@pinecone-database/pinecone');
+const { QdrantClient } = require('@qdrant/js-client-rest');
 
 // Import solver-node napi bindings
 const { 
   buildFeatureVector: buildFeatureVectorRust,
   extractBoardTextureJs,
   canonicalizeActionHistory: canonicalizeActionHistoryRust,
-  calculateActionHash
+  calculateActionHash,
+  generateActionSequence
 } = require('./solver-node');
 
-// Pinecone client (singleton)
-let pineconeClient = null;
-let pineconeIndex = null;
+// Import position bucket utilities
+const { buildPositionBucketFilters, getPositionBucket } = require('./position-buckets');
+
+// Qdrant client (singleton)
+let qdrantClient = null;
 
 /**
  * Vector Search Module for Solver Node Lookup
@@ -23,29 +26,44 @@ let pineconeIndex = null;
  */
 
 /**
- * Initialize Pinecone client (lazy initialization)
+ * Initialize Qdrant client (lazy initialization)
  */
-async function initializePinecone() {
-  if (!pineconeClient) {
-    if (!process.env.PINECONE_API_KEY) {
-      throw new Error('PINECONE_API_KEY environment variable is required');
-    }
-    
-    pineconeClient = new Pinecone({
-      apiKey: process.env.PINECONE_API_KEY
+async function initializeQdrant() {
+  if (!qdrantClient) {
+    qdrantClient = new QdrantClient({
+      host: process.env.QDRANT_HOST || 'localhost',
+      port: parseInt(process.env.QDRANT_PORT) || 6333,
     });
     
-    const indexName = process.env.PINECONE_INDEX_NAME || 'railbird-solver-nodes';
-    pineconeIndex = pineconeClient.index(indexName);
-    
-    console.log(`✅ Initialized Pinecone client with index: ${indexName}`);
+    console.log(`✅ Initialized Qdrant client at ${process.env.QDRANT_HOST || 'localhost'}:${process.env.QDRANT_PORT || 6333}`);
   }
   
-  return pineconeIndex;
+  return qdrantClient;
 }
 
 // Note: Position mappings, street encodings, and other constants are now handled 
 // internally by the Rust napi bindings for optimal performance and consistency
+
+/**
+ * Determine which Qdrant collection to use based on street
+ * @param {string} street - The street (FLOP, TURN, RIVER)
+ * @returns {string} Collection name
+ */
+function getCollectionName(street) {
+  const streetUpper = street ? street.toUpperCase() : '';
+  
+  switch (streetUpper) {
+    case 'FLOP':
+      return process.env.QDRANT_FLOP_COLLECTION || 'flop_nodes';
+    case 'TURN':
+      return process.env.QDRANT_TURN_COLLECTION || 'turn_nodes';
+    case 'RIVER':
+      return process.env.QDRANT_RIVER_COLLECTION || 'river_nodes';
+    default:
+      // Default to flop_nodes if street is not specified
+      return process.env.QDRANT_COLLECTION_NAME || 'flop_nodes';
+  }
+}
 
 /**
  * Extract board texture features from board cards using Rust napi binding
@@ -63,7 +81,23 @@ function extractBoardTexture(board) {
   }
 }
 
-// Note: Action parsing and bet ratio bucketing are now handled internally by Rust napi bindings
+ /**
+ * Get flop archetype name from board
+ */
+ function getFlopArchetypeName(board) {
+  if (!board || board.length < 3) return 'Unknown';
+  
+  const ranks = board.slice(0, 3).map(card => {
+    const rank = card[0];
+    const value = '23456789TJQKA'.indexOf(rank);
+    if (value >= 8) return 'H';      // High
+    if (value >= 4) return 'M';      // Medium
+    return 'L';                       // Low
+  });
+  
+  ranks.sort();
+  return ranks.join('');
+}
 
 /**
  * Canonicalize action history for consistent hashing using Rust napi binding
@@ -107,74 +141,16 @@ function calculateCanonicalActionHash(actionHistory, pot) {
 }
 
 /**
- * Remove closing actions from action history for turn/river snapshots
- * This handles the case where the vector corpus has incomplete action histories
- * (missing closing actions from flop) due to mass solve without proper closing
- * @param {string[]} actionHistory - Array of action strings
- * @param {string} street - Current street (flop, turn, river)
- * @returns {string[]} Action history with closing actions removed
- */
-function removeClosingActions(actionHistory, street) {
-  // Only apply to turn and river (corpus was built from flop without proper closing)
-  if (street.toLowerCase() !== 'turn' && street.toLowerCase() !== 'river') {
-    return actionHistory;
-  }
-  
-  if (!actionHistory || actionHistory.length === 0) {
-    return actionHistory;
-  }
-  
-  const cleaned = [...actionHistory];
-  let i = 0;
-  
-  while (i < cleaned.length) {
-    const action = cleaned[i].toLowerCase();
-    
-    // Remove Call actions that follow aggressive actions (these are likely closing actions)
-    if (action.startsWith('call') && i > 0) {
-      const prevAction = cleaned[i - 1].toLowerCase();
-      if (prevAction.startsWith('bet') || 
-          prevAction.startsWith('raise') || 
-          prevAction.startsWith('all-in') || 
-          prevAction.startsWith('allin')) {
-        // This Call likely closes a street - remove it
-        cleaned.splice(i, 1);
-        continue; // Don't increment i since we removed an element
-      }
-    }
-    
-    // Remove redundant Check-Check sequences that might indicate street closing
-    if (action.startsWith('check') && i > 0) {
-      const prevAction = cleaned[i - 1].toLowerCase();
-      if (prevAction.startsWith('check')) {
-        // Second check in sequence might be a closing action - remove it
-        cleaned.splice(i, 1);
-        continue; // Don't increment i since we removed an element
-      }
-    }
-    
-    i++;
-  }
-  
-  return cleaned;
-}
-
-/**
- * Build 73-dimension feature vector from SnapshotInput using Rust napi binding
+ * Build 71-dimension feature vector from SnapshotInput using Rust napi binding
  * 
  * @param {Object} snapshotInput - The snapshot input object
- * @returns {number[]} 73-dimension feature vector
+ * @returns {number[]} 71-dimension feature vector
  */
 function buildFeatureVector(snapshotInput) {
   try {
-    // Preprocess snapshot to handle corpus with incomplete action histories
-    const modifiedSnapshot = {
-      ...snapshotInput,
-      action_history: removeClosingActions(snapshotInput.action_history, snapshotInput.street)
-    };
     
     // Use the Rust implementation which is 10-50x faster
-    return buildFeatureVectorRust(JSON.stringify(modifiedSnapshot));
+    return buildFeatureVectorRust(JSON.stringify(snapshotInput));
   } catch (error) {
     console.error('Error building feature vector with Rust binding:', error);
     throw new Error(`Feature vector generation failed: ${error.message}`);
@@ -182,7 +158,7 @@ function buildFeatureVector(snapshotInput) {
 }
 
 /**
- * Find similar node using Pinecone Vector Search
+ * Find similar node using Qdrant Vector Search with parent fallback strategy
  * @param {Object} snapshotInput - The snapshot input to search for
  * @param {Object} options - Optional configuration
  * @returns {Promise<Object|null>} LeanNodeMeta if found with score > 0.55, null otherwise
@@ -190,63 +166,113 @@ function buildFeatureVector(snapshotInput) {
 async function findSimilarNode(snapshotInput, options = {}) {
   const {
     minScore = 0.55,
-    limit = 1,
-    filter = {} // Pinecone metadata filters
+    limit = 10,
+    enableParentFallback = true, // New option for parent fallback
+    maxParentDepth = 2 // Maximum number of actions to remove for parent search
   } = options;
 
   try {
-    // Initialize Pinecone client
-    const index = await initializePinecone();
+    // Initialize Qdrant client
+    const client = await initializeQdrant();
+    const collectionName = getCollectionName(snapshotInput.street);
     
-    // Build 73-dimension feature vector and pad to match Pinecone index dimension
+    // Build feature vector (71 dimensions)
     const originalVector = buildFeatureVector(snapshotInput);
     
     console.log(`DEBUG: Built ${originalVector.length}-dimension feature vector`);
+    
+    // Generate action sequence for filtering
+    const actionSequence = generateActionSequence(snapshotInput.action_history || []);
+    
+    // Build filter conditions for Qdrant
+    const filter = {
+      must: []
+    };
+    
+    // Always filter by action sequence for exact match
+    filter.must.push({
+      key: "action_sequence",
+      match: {
+        value: actionSequence
+      }
+    });
+    
+    filter.must.push({
+      key: "street",
+      match: {
+        value: snapshotInput.street
+      }
+    });
+  
+    filter.must.push({
+      key: "pot_type",
+      match: {
+        value: snapshotInput.pot_type
+      }
+    });
+  
+    filter.must.push({
+      key: "next_to_act",
+      match: {
+        value: snapshotInput.next_to_act
+      }
+    });
 
-    function getPotTypeValue(potType) {
-      switch (potType.toLowerCase()) {
-        case 'srp': return 0;
-        case '3bp': return 1;
-        case '4bp': return 2;
-        default: return 0;
+    const queryFlopArchetype = getFlopArchetypeName(snapshotInput.board);
+    filter.must.push({
+      key: "flop_archetype",
+      match: {
+        value: queryFlopArchetype,
+      }
+    });
+
+    // Add position bucket filters if positions are available
+    if (snapshotInput.positions && snapshotInput.positions.ip && snapshotInput.positions.oop) {
+      const { ip, oop } = snapshotInput.positions;
+      const buckets = { ip: getPositionBucket(ip), oop: getPositionBucket(oop) };
+      
+      // Only add position bucket filters if we have valid buckets
+      if (buckets.ip && buckets.oop) {
+        const positionFilters = buildPositionBucketFilters(buckets);
+        filter.must.push(...positionFilters);
       }
     }
     
-    const targetDimension = parseInt(process.env.PINECONE_VECTOR_DIMENSION) || 512;
-    const queryVector = [...originalVector];
-    
-    // Pad with zeros to reach target dimension
-    while (queryVector.length < targetDimension) {
-      queryVector.push(0.0);
-    }
-    
-    // Perform vector search using Pinecone
-    const queryRequest = {
-      vector: queryVector,
-      topK: limit * 3, // Fetch more candidates for filtering
-      includeMetadata: true,
-      includeValues: false
+    // Perform vector search using Qdrant
+    const searchParams = {
+      vector: originalVector,
+      limit: limit * 3, // Fetch more candidates for filtering
+      with_payload: true,
+      score_threshold: minScore
     };
-
-    const queryResults = await index.query(queryRequest);
     
-    if (!queryResults.matches || queryResults.matches.length === 0) {
+    // Only add filter if we have conditions
+    if (filter.must.length > 0) {
+      searchParams.filter = filter;
+    }
+    
+    const searchResults = await client.search(collectionName, searchParams);
+    
+    // Check if we have valid matches
+    if (!searchResults || searchResults.length === 0) {
+      // Try parent fallback if enabled
+      if (enableParentFallback && snapshotInput.action_history && snapshotInput.action_history.length > 0) {
+        console.log('No matches found, attempting parent fallback strategy...');
+        return await findSimilarNodeWithParentFallback(snapshotInput, options);
+      }
       return null;
     }
 
-    // Filter by minimum score and get the best match
-    const validMatches = queryResults.matches.filter(match => match.score >= minScore);
-    
-    if (validMatches.length === 0) {
-      return null;
-    }
+    const bestMatch = searchResults[0];
 
-    const bestMatch = validMatches[0];
+    console.log({ bestMatch })
     
-    // Reconstruct the LeanNodeMeta structure from Pinecone metadata
+    // Reconstruct the LeanNodeMeta structure from Qdrant payload
     const nodeMetadata = {
       _id: bestMatch.id,
-      ...bestMatch.metadata
+      ...bestMatch.payload,
+      matchType: 'exact', // Indicate this is an exact match
+      score: bestMatch.score
     };
 
     return {
@@ -259,6 +285,61 @@ async function findSimilarNode(snapshotInput, options = {}) {
     console.error('Error in findSimilarNode:', error);
     throw new Error(`Vector search failed: ${error.message}`);
   }
+}
+
+/**
+ * Find similar node using parent fallback strategy
+ * Progressively removes actions from the end of action history until a match is found
+ * @param {Object} snapshotInput - The original snapshot input
+ * @param {Object} options - Configuration options
+ * @returns {Promise<Object|null>} LeanNodeMeta if found, null otherwise
+ */
+async function findSimilarNodeWithParentFallback(snapshotInput, options = {}) {
+  const { maxParentDepth = 2, minScore = 0.55 } = options;
+  const originalActionHistory = snapshotInput.action_history || [];
+  
+  if (originalActionHistory.length === 0) {
+    return null;
+  }
+  
+  // Try progressively removing actions from the end
+  for (let depth = 1; depth <= Math.min(maxParentDepth, originalActionHistory.length); depth++) {
+    const parentSnapshot = {
+      ...snapshotInput,
+      action_history: originalActionHistory.slice(0, -depth)
+    };
+    
+    // Disable parent fallback for these recursive calls to prevent infinite recursion
+    const parentOptions = {
+      ...options,
+      enableParentFallback: false
+    };
+    
+    try {
+      const result = await findSimilarNode(parentSnapshot, parentOptions);
+      
+      if (result) {
+        // Mark this as a parent match and include info about removed actions
+        const removedActions = originalActionHistory.slice(-depth);
+        return {
+          ...result,
+          nodeMetadata: {
+            ...result.nodeMetadata,
+            matchType: 'parent',
+            parentDepth: depth,
+            removedActions: removedActions
+          },
+          isApproximation: true // Parent matches are always approximations
+        };
+      }
+    } catch (error) {
+      console.error(`Error searching for parent at depth ${depth}:`, error);
+      // Continue to next depth
+    }
+  }
+  
+  console.log(`Parent fallback: No matches found after removing up to ${maxParentDepth} actions`);
+  return null;
 }
 
 /**
@@ -296,8 +377,7 @@ module.exports = {
   extractBoardTexture,
   canonicalizeActionHistory,
   calculateCanonicalActionHash,
-  // Pinecone utilities
-  initializePinecone,
-  // Export removeClosingActions for use in solverNodeService
-  removeClosingActions
+  generateActionSequence,
+  // Qdrant utilities
+  initializeQdrant,
 };

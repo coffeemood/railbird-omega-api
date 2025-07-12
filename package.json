@@ -15,7 +15,7 @@
     "@dicebear/core": "^9.2.2",
     "@google/generative-ai": "^0.24.1",
     "@mistralai/mistralai": "^1.7.2",
-    "@pinecone-database/pinecone": "^3.1.0",
+    "@qdrant/js-client-rest": "^1.14.1",
     "@tiptap/core": "^2.11.5",
     "@tiptap/extension-focus": "^2.11.5",
     "@tiptap/react": "^2.11.5",

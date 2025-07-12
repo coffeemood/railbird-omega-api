@@ -376,6 +376,8 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
       ip: positions.ip,
       oop: positions.oop
     },
+    positions_ip: positions.ip, // Add individual position fields for filtering
+    positions_oop: positions.oop, // Add individual position fields for filtering
     action_history: cumulativeActions,
     game_type: gameType,
     pot_type: potType,
