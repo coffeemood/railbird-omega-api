@@ -15,6 +15,10 @@ const pusher = require('../utils/pusher');
 const { generateSnapshots } = require('../utils/solver-snapshot-generator');
 const { findSimilarNode } = require('../utils/vectorSearch');
 const { processSnapshotWithSolverData } = require('../utils/solverNodeService');
+const Solves = require('../db/collections/Solves');
+
+// Import debug flags for matching criteria analysis
+const { generateDebugFlags } = require('../utils/debug-flags');
 
 const potSizesRules = {
   '0-10bb': { $lte: 10 },
@@ -1081,5 +1085,139 @@ router.post(
     }
   }
 );
+
+// Enhanced hand analysis using new prepareSnapshots flow
+router.post(
+  '/v1/hands/:id/analyze-enhanced',
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const ownerId = Account.userId();
+      const _id = +req.params.id;
+      // Get hand data
+      const hand = await Hands.findOneByQuery({ _id, ownerId });
+      if (!hand) {
+        return res.status(404).json({
+          success: false,
+          error: 'Hand not found'
+        });
+      }
+
+      // Generate snapshots using existing generator
+      const snapshots = generateSnapshots(hand);
+      
+      // Prepare enriched snapshots using the new enhanced flow
+      const enrichedSnapshots = await Solves.prepareSnapshots(id);
+
+      // TEMPORARY: Get vector results for debug purposes (can be deleted later)
+      const vectorResults = await Promise.all(
+        enrichedSnapshots
+          .filter(s => s.snapshotInput.street !== 'RIVER') // Exclude RIVER from vector search
+          .map(snapshot => findSimilarNode(snapshot.snapshotInput))
+      );
+
+      // Attach vector results to enriched snapshots
+      let vectorIndex = 0;
+      enrichedSnapshots.forEach(snapshot => {
+        if (snapshot.snapshotInput.street !== 'RIVER') {
+          snapshot.vectorResult = vectorResults[vectorIndex];
+          vectorIndex++;
+        } else {
+          // For RIVER, use null vector result since it uses TURN data
+          snapshot.vectorResult = null;
+        }
+      });
+
+      // Prepare LLM-ready data for each snapshot with debug matching criteria
+      const llmReadySnapshots = enrichedSnapshots.map(snapshot => {
+        let debugFlags = null;
+        
+        // Generate debug flags if we have solver data
+        if (snapshot.solver && snapshot.vectorResult) {
+          try {
+            // Convert solver metadata to payload format for debug flags
+            const mockPayload = {
+              board: snapshot.vectorResult.nodeMetadata?.board || [],
+              positions_oop: snapshot.vectorResult.nodeMetadata?.positions?.oop || 'bb',
+              positions_ip: snapshot.vectorResult.nodeMetadata?.positions?.ip || 'bu',
+              pot_type: snapshot.vectorResult.nodeMetadata?.pot_type || 'srp',
+              action_history: snapshot.vectorResult.nodeMetadata?.action_history || [],
+              street: snapshot.vectorResult.nodeMetadata?.street || snapshot.snapshotInput.street,
+              next_to_act: snapshot.vectorResult.nodeMetadata?.next_to_act || 'oop'
+            };
+            
+            debugFlags = generateDebugFlags(
+              snapshot.snapshotInput,
+              mockPayload,
+              snapshot.snapshotInput.action_history || [],
+              snapshot.solver.sim || 0
+            );
+          } catch (error) {
+            console.warn('Debug flags generation failed:', error.message);
+            debugFlags = {
+              matchPosition: false,
+              matchPotType: false,
+              matchActionHistory: false,
+              matchBoardTexture: false,
+              matchStreet: false,
+              similarityScore: snapshot.solver?.sim || 0
+            };
+          }
+        }
+
+        return {
+          snapshotInput: snapshot.snapshotInput,
+          solver: snapshot.solver,
+          vectorResult: snapshot.vectorResult,
+          debugFlags: debugFlags,
+          llmPromptData: {
+            street: snapshot.snapshotInput.street,
+            board: snapshot.snapshotInput.board,
+            pot: snapshot.snapshotInput.pot_bb,
+            stack: snapshot.snapshotInput.stack_bb,
+            positions: snapshot.snapshotInput.positions,
+            actionHistory: snapshot.snapshotInput.action_history,
+            heroCards: snapshot.snapshotInput.heroCards,
+            nextToAct: snapshot.snapshotInput.next_to_act,
+            // Solver analysis summary
+            recommendedAction: snapshot.solver?.optimalStrategy?.recommendedAction,
+            boardAnalysis: snapshot.solver?.boardAnalysis,
+            rangeAdvantage: snapshot.solver?.rangeAdvantage,
+            blockerImpact: snapshot.solver?.blockerImpact,
+            handFeatures: snapshot.solver?.handFeatures,
+            similarity: snapshot.solver?.sim
+          }
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          handId: id,
+          originalSnapshots: snapshots,
+          enrichedSnapshots: enrichedSnapshots,
+          llmReadySnapshots: llmReadySnapshots,
+          analysisMetadata: {
+            totalSnapshots: snapshots.length,
+            enrichedCount: enrichedSnapshots.length,
+            flopCount: enrichedSnapshots.filter(s => s.snapshotInput.street === 'FLOP').length,
+            turnCount: enrichedSnapshots.filter(s => s.snapshotInput.street === 'TURN').length,
+            riverCount: enrichedSnapshots.filter(s => s.snapshotInput.street === 'RIVER').length,
+            solverMatchCount: enrichedSnapshots.filter(s => s.solver !== null).length
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Error in enhanced hand analysis:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        details: error.message
+      });
+    }
+  }
+);
+
 
 module.exports = router;

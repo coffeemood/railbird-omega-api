@@ -1,19 +1,19 @@
 const s3Helper = require('./s3');
-// Note: ZSTDDecompress no longer needed - using Rust for decompression
 
-// Import solver-node napi bindings
-const { 
-  decodeCompactNode,
-  transformCompactToSolverBlock,
-  decodeCompressedNode,
-  unpackAndTransformNode
-} = require('./solver-node');
+// Import the new modular solver service
+const ModularSolverNodeService = require('./ModularSolverNodeService');
 
 // Import buildFeatureVector to generate query vector
 const { buildFeatureVector } = require('./vectorSearch');
 
 // Import Solves collection for flop nodes
 const Solves = require('../db/collections/Solves');
+
+// Initialize the modular service with metrics enabled
+const modularService = new ModularSolverNodeService({
+    enableMetrics: true,
+    defaultBucket: process.env.SOLVER_S3_BUCKET || 'solver-nodes'
+});
 
 /**
  * Solver Node Service Module
@@ -27,20 +27,20 @@ const Solves = require('../db/collections/Solves');
  */
 
 /**
- * Decode Bincode-encoded data to JSON using Rust napi binding
+ * Decode Bincode-encoded data to JSON using modular service
  * 
  * @param {Buffer} buffer - Bincode encoded data
  * @param {boolean} isCompressed - Whether the buffer is zstd-compressed
- * @returns {Object} Decoded CompactNodeAnalysis object
+ * @returns {Object} Decoded NodeAnalysis objects (array for compressed files)
  */
 function decodeBincode(buffer, isCompressed = false) {
   try {
     if (isCompressed) {
-      // Use the Rust implementation for both decompression and bincode decoding
-      return JSON.parse(decodeCompressedNode(buffer));
+      // Use modular service for decompression and decoding
+      return modularService.decodeCompressedNode(buffer);
     } else {
-      // Use the Rust implementation for just bincode decoding
-      return JSON.parse(decodeCompactNode(buffer));
+      // Use modular service for just bincode decoding
+      return modularService.decodeNode(buffer);
     }
   } catch (error) {
     throw new Error(`Failed to decode Bincode data: ${error.message}`);
@@ -48,43 +48,14 @@ function decodeBincode(buffer, isCompressed = false) {
 }
 
 /**
- * Fetch and unpack a solver node from S3
+ * Fetch and unpack a solver node from S3 using modular service
  * @param {Object} leanNodeMeta - The LeanNodeMeta object containing S3 location
- * @returns {Promise<Object>} Unpacked CompactNodeAnalysis object
+ * @returns {Promise<Array<Object>>} Array of unpacked NodeAnalysis objects
  */
 async function getUnpackedNode(leanNodeMeta) {
-  if (!leanNodeMeta || !leanNodeMeta.s3_key) {
-    throw new Error('Invalid LeanNodeMeta: missing s3_key');
-  }
-
-  // Extract S3 location from LeanNodeMeta
-  // Note: In the Rust types, s3_bucket is optional in some structs
-  const {
-    s3_bucket,
-    s3_key,
-    offset = 0,
-    length
-  } = leanNodeMeta;
-  
-  // Use provided bucket or fall back to default
-  const bucket = s3_bucket || process.env.SOLVER_S3_BUCKET || 'solver-nodes';
-
   try {
-    // Fetch the compressed data from S3
-    const s3Data = await s3Helper.getObject(bucket, s3_key);
-    
-    // Extract the specific frame if offset/length are provided
-    let compressedData = s3Data.Body;
-    if (offset > 0 || length) {
-      const endPos = length ? offset + length : undefined;
-      compressedData = s3Data.Body.slice(offset, endPos);
-    }
-
-    // Use Rust for both decompression and bincode decoding (much faster)
-    const nodeAnalysis = decodeBincode(compressedData, true);
-
-    return nodeAnalysis;
-
+    // Use modular service for complete fetch and decode operation
+    return await modularService.fetchAndDecodeNode(leanNodeMeta);
   } catch (error) {
     console.error('Error fetching/unpacking node:', error);
     throw new Error(`Failed to get unpacked node: ${error.message}`);
@@ -95,111 +66,271 @@ async function getUnpackedNode(leanNodeMeta) {
 // internally by the Rust napi bindings for optimal performance
 
 /**
- * Fetch, unpack, and transform a solver node in one efficient operation
- * This is the most performance-optimized approach for the complete pipeline
+ * Build SolverBlock from NodeAnalysis using modular functions
+ * @param {Array<Object>} nodeAnalyses - Array of NodeAnalysis objects from decode
+ * @param {Object} snapshotInput - The snapshot input object
+ * @param {number} similarityScore - Similarity score from vector search
+ * @param {string} heroHand - Optional hero hand (e.g., "AhKh")
+ * @param {string} nodeId - Optional specific node ID to find
+ * @returns {Promise<Object>} SolverBlock built using modular functions
+ */
+async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similarityScore = 1.0, heroHand = null, nodeId = null) {
+  try {
+    // Find the target node
+    let targetNode;
+    if (nodeId && Array.isArray(nodeAnalyses)) {
+      // Direct lookup by node_identifier for TURN nodes
+      targetNode = nodeAnalyses.find(node => node.node_id === nodeId || node.node_identifier === nodeId);
+      if (!targetNode) {
+        throw new Error(`Node with identifier '${nodeId}' not found in file`);
+      }
+      console.log('Found TURN node by direct lookup:', nodeId);
+    } else if (Array.isArray(nodeAnalyses)) {
+      // For RIVER nodes or when no specific node ID, use first node or implement selection logic
+      targetNode = nodeAnalyses[0];
+      console.log(`Using first node from ${nodeAnalyses.length} available nodes`);
+    } else {
+      targetNode = nodeAnalyses;
+    }
+
+    if (!targetNode) {
+      throw new Error('No target node found for SolverBlock building');
+    }
+
+    // Extract basic node information
+    const solverBlock = {
+      nodeId: targetNode.node_id || 'unknown',
+      street: targetNode.street || snapshotInput.street,
+      board: targetNode.board || snapshotInput.board,
+      pot: targetNode.pot || snapshotInput.pot_bb,
+      stacks: {
+        oop: targetNode.stack_oop || snapshotInput.stack_bb,
+        ip: targetNode.stack_ip || snapshotInput.stack_bb
+      },
+      positions: snapshotInput.positions || { oop: 'bb', ip: 'bu' },
+      nextToAct: targetNode.next_to_act === 'IP' ? 'ip' : 'oop',
+      sim: similarityScore
+    };
+
+    // Build components using modular functions
+    const board = snapshotInput.board;
+    
+    try {
+      // Board Analysis
+      solverBlock.boardAnalysis = modularService.analyzeBoardTexture(board);
+    } catch (error) {
+      console.warn('Board analysis failed:', error.message);
+      solverBlock.boardAnalysis = { texture: 'Unknown', isPaired: false, textureTags: [] };
+    }
+
+    // console.log({ targetNode })
+
+    // Extract ranges from node data
+    const oopRange = targetNode.rangeStats.oop || `${heroHand}@100`;
+    const ipRange = targetNode.rangeStats.ip || '';
+    
+    try {
+      // Range Equity Analysis
+      solverBlock.rangeAdvantage = modularService.calculateRangeEquity(
+        oopRange,
+        ipRange,
+        board,
+        solverBlock.nextToAct
+      );
+    } catch (error) {
+      console.warn('Range equity analysis failed:', error.message);
+      solverBlock.rangeAdvantage = {
+        heroEquity: 50, villainEquity: 50, equityDelta: 0,
+        heroValuePct: 0, villainValuePct: 0, valueDelta: 0
+      };
+    }
+
+    // Hero hand analysis (if provided)
+    if (heroHand) {
+      try {
+        // Determine villain range based on position
+        const villainRange = solverBlock.nextToAct === 'oop' ? ipRange : oopRange;
+
+        
+        // Blocker Impact Analysis
+        solverBlock.blockerImpact = modularService.calculateBlockerImpact(
+          heroHand,
+          villainRange,
+          board
+        );
+
+        // Hand Features Analysis
+        solverBlock.handFeatures = modularService.analyzeHandFeatures(
+          heroHand,
+          board,
+          villainRange
+        );
+
+        // Complete Range Analysis
+        const rangeAnalysis = modularService.analyzeRangeComplete(
+          heroHand,
+          villainRange,
+          board,
+          solverBlock.nextToAct === 'oop' ? oopRange : ipRange
+        );
+        
+        
+        solverBlock.heroRange = rangeAnalysis.heroRange;
+        solverBlock.villainRange = rangeAnalysis.villainRange;
+        
+      } catch (error) {
+        console.warn('Hero hand analysis failed:', error.message);
+        solverBlock.blockerImpact = {
+          combosBlockedPct: 0, valueBlockedPct: 0, bluffsUnblockedPct: 0,
+          cardRemoval: [], topBlocked: []
+        };
+        solverBlock.handFeatures = {
+          madeTier: 'Unknown', drawFlags: [], equityVsRange: 50
+        };
+      }
+    }
+
+    // Optimal Strategy from node data
+    try {
+      const actions = targetNode.actionsOOP || targetNode.actionsIP || [];
+      if (actions.length > 0) {
+        // Find recommended action (highest frequency)
+        const recommendedAction = actions.reduce((best, current) => 
+          current.frequency > best.frequency ? current : best
+        );
+        
+        solverBlock.optimalStrategy = {
+          recommendedAction: {
+            action: recommendedAction.action,
+            ev: recommendedAction.ev,
+            frequency: recommendedAction.frequency
+          },
+          actionFrequencies: actions.map(action => ({
+            action: action.action,
+            frequency: action.frequency,
+            ev: action.ev
+          }))
+        };
+      } else {
+        solverBlock.optimalStrategy = {
+          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0 },
+          actionFrequencies: []
+        };
+      }
+    } catch (error) {
+      console.warn('Strategy analysis failed:', error.message);
+      solverBlock.optimalStrategy = {
+        recommendedAction: { action: 'Check', ev: 0, frequency: 1.0 },
+        actionFrequencies: []
+      };
+    }
+
+    return solverBlock;
+    
+  } catch (error) {
+    console.error('Error building SolverBlock from node data:', error);
+    throw new Error(`Failed to build SolverBlock: ${error.message}`);
+  }
+}
+
+/**
+ * Fetch, unpack, and transform a solver node using modular approach
  * @param {Object} leanNodeMeta - The LeanNodeMeta object containing S3 location
  * @param {Object} snapshotInput - The snapshot input object
  * @param {number} similarityScore - Similarity score from vector search
  * @param {string} heroHand - Optional hero hand (e.g., "AhKh")
- * @returns {Promise<Object>} SolverBlock directly without intermediate conversions
+ * @returns {Promise<Object>} SolverBlock built using modular functions
  */
 async function getUnpackedAndTransformedNode(leanNodeMeta, snapshotInput, similarityScore = 1.0, heroHand = null) {
-  console.log({ leanNodeMeta })
-  if (!leanNodeMeta || !leanNodeMeta.s3_key) {
-    throw new Error('Invalid LeanNodeMeta: missing s3_key');
-  }
-
-  const {
-    s3_bucket,
-    s3_key,
-    offset = 0,
-    length
-  } = leanNodeMeta;
   
-  const bucket = s3_bucket || process.env.SOLVER_S3_BUCKET || 'solver-nodes';
-
   try {
-    // Fetch the compressed data from S3
-    const s3Data = await s3Helper.getObject(bucket, s3_key);
+    // Fetch and decode the node data using modular service
+    const nodeAnalyses = await modularService.fetchAndDecodeNode(leanNodeMeta);
     
-    // Extract the specific frame if offset/length are provided
-    let compressedData = s3Data.Body;
-    if (offset > 0 || length) {
-      const endPos = length ? offset + length : undefined;
-      compressedData = s3Data.Body.slice(offset, endPos);
-    }
-
-    const fs = require('fs');
-    // also save the compressed data to a file
-    fs.writeFileSync(`compressedData_${snapshotInput.street}.zstd`, compressedData);
-
-    // Build feature vector using the modified snapshot and pad to 512 dimensions
-    const originalVector = buildFeatureVector(snapshotInput);
-    const queryVector512 = [...originalVector];
-    
-    // Pad with zeros to reach 512 dimensions
-    while (queryVector512.length < 512) {
-      queryVector512.push(0.0);
+    // For TURN nodes, save compressed data for debugging
+    if (snapshotInput.street === 'TURN') {
+      try {
+        const compressedData = await modularService.fetchCompressedNodeData(leanNodeMeta);
+        const fs = require('fs');
+        fs.writeFileSync(`compressedData_${snapshotInput.street}.zstd`, compressedData);
+      } catch (debugError) {
+        console.warn('Failed to save debug file:', debugError.message);
+      }
     }
 
     // Extract hero hand from snapshot if available
-    const heroHandFromSnapshot = snapshotInput.heroCards || heroHand;
+    const heroHandFromSnapshot = snapshotInput.heroCards && typeof snapshotInput.heroCards === 'string' ? 
+      snapshotInput.heroCards : heroHand;
+
+    // Get node ID for direct lookup (for TURN nodes)
+    const nodeId = snapshotInput.node_identifier;
     
-    // Call Rust function with modified snapshot that has cleaned action history
-    const solverBlockJson = unpackAndTransformNode(
-      compressedData,
-      JSON.stringify(snapshotInput),
-      queryVector512,
-      heroHandFromSnapshot
+    // Build SolverBlock using modular functions
+    const result = await buildSolverBlockFromNodeData(
+      nodeAnalyses,
+      snapshotInput,
+      similarityScore,
+      heroHandFromSnapshot,
+      nodeId
     );
 
-    const result = JSON.parse(solverBlockJson);
-
+    // Handle TURN fallback strategy
     if (snapshotInput.street === 'TURN' && !result.optimalStrategy?.actionFrequencies?.length) {
       // Use fallback metadata
-      result.optimalStrategy = JSON.parse(leanNodeMeta.optimal_strategy);
-      delete result.rangeAdvantage  // combo data error
-      delete result.handFeatures;
+      if (leanNodeMeta.optimal_strategy) {
+        try {
+          result.optimalStrategy = JSON.parse(leanNodeMeta.optimal_strategy);
+        } catch (parseError) {
+          console.warn('Failed to parse fallback strategy:', parseError.message);
+        }
+      }
+      // Remove unreliable data for TURN nodes
+      delete result.rangeAdvantage;
     }
 
     return result;
 
   } catch (error) {
-    console.error('Error in efficient unpack and transform:', error);
+    console.error('Error in modular unpack and transform:', error);
     throw new Error(`Failed to get unpacked and transformed node: ${error.message}`);
   }
 }
 
 /**
- * Transform CompactNodeAnalysis to SolverBlock format for frontend using Rust napi binding
- * @param {Object} compactNodeAnalysis - CompactNodeAnalysis object from bincode
+ * Transform NodeAnalysis to SolverBlock format using modular functions
+ * @param {Object|Array<Object>} nodeAnalysis - NodeAnalysis object(s) from decode
  * @param {Object} snapshot - The snapshot input object
  * @param {number} similarityScore - Similarity score from vector search
  * @param {string} heroHand - Optional hero hand (e.g., "AhKh")
- * @returns {Object} SolverBlock formatted for frontend
+ * @returns {Promise<Object>} SolverBlock formatted for frontend
  */
-function transformNodeToSolverBlock(compactNodeAnalysis, snapshot, similarityScore = 1.0, heroHand = null) {
-  if (!compactNodeAnalysis) {
-    throw new Error('Invalid CompactNodeAnalysis: null or undefined');
+async function transformNodeToSolverBlock(nodeAnalysis, snapshot, similarityScore = 1.0, heroHand = null) {
+  if (!nodeAnalysis) {
+    throw new Error('Invalid NodeAnalysis: null or undefined');
   }
 
   try {
-    // Use the Rust implementation which provides comprehensive transformation
-    // including range analysis, blocker calculations, and board texture analysis
-    return JSON.parse(transformCompactToSolverBlock(
-      JSON.stringify(compactNodeAnalysis),
-      JSON.stringify(snapshot),
+    // Use modular approach to build SolverBlock
+    return await buildSolverBlockFromNodeData(
+      nodeAnalysis,
+      snapshot,
       similarityScore,
       heroHand
-    ));
+    );
   } catch (error) {
-    console.error('Error transforming node with Rust binding:', error);
+    console.error('Error transforming node with modular functions:', error);
     
-    // Fallback to basic transformation if Rust binding fails
+    // Fallback to basic transformation if modular approach fails
+    const nodeId = Array.isArray(nodeAnalysis) ? 
+      (nodeAnalysis[0]?.node_id || 'unknown') : 
+      (nodeAnalysis.node_id || 'unknown');
+      
     return {
-      nodeId: compactNodeAnalysis.node_id || 'unknown',
+      nodeId,
       sim: similarityScore,
       boardAnalysis: {
+        texture: 'Unknown',
+        isPaired: false,
         textureTags: []
       },
       rangeAdvantage: {
@@ -228,7 +359,8 @@ function transformNodeToSolverBlock(compactNodeAnalysis, snapshot, similaritySco
       optimalStrategy: {
         recommendedAction: {
           action: 'Check',
-          ev: 0
+          ev: 0,
+          frequency: 1.0
         },
         actionFrequencies: []
       },
@@ -357,6 +489,9 @@ module.exports = {
   getUnpackedNode,
   getUnpackedAndTransformedNode,
   transformNodeToSolverBlock,
+  buildSolverBlockFromNodeData,
   processSnapshotWithSolverData,
-  batchProcessSnapshots
+  batchProcessSnapshots,
+  // Export modular service for direct access if needed
+  modularService
 };

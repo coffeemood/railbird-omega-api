@@ -189,10 +189,21 @@ function detectDecisionPoints(hand, heroSeatIndex) {
         }
       }
       
+      // Add amountBB to heroAction for LLM consumption
+      const enrichedHeroAction = { ...action };
+      if (enrichedHeroAction.action?.amount && hand.header?.bb) {
+        enrichedHeroAction.action = {
+          ...enrichedHeroAction.action,
+          amountBB: (enrichedHeroAction.action.amount / hand.header.bb).toFixed(1)
+        };
+      }
+
       decisionPoints.push({
         actionIndex: index,
         state: state,
-        heroAction: action,
+        heroAction: enrichedHeroAction,
+        sb: hand.header.sb,
+        bb: hand.header.bb,
         actionsBeforeThisPoint: actionsBeforeThisPoint
       });
     }
@@ -323,6 +334,53 @@ function formatActionForSolver(action, bbSize = 1) {
 }
 
 /**
+ * Build street-by-street action history with decision marker
+ */
+function buildStreetActionsHistory(decisionPoint, hand, heroSeatIndex, primaryVillain) {
+  const streetActions = { PREFLOP: [], FLOP: [], TURN: [], RIVER: [] };
+  const bbSize = hand.header?.bb || 1;
+  
+  // Process actions before this decision point
+  decisionPoint.actionsBeforeThisPoint.forEach(action => {
+    const street = (action.street || '').toUpperCase();
+    
+    // Skip if not a valid street
+    if (!streetActions[street]) return;
+    
+    // Focus on Hero, primary villain, and other significant players
+    const isRelevantPlayer = action.playerIndex === heroSeatIndex || 
+                            action.playerIndex === primaryVillain ||
+                            ['bet', 'raise'].includes(action.action?.type); // Include aggressors
+    
+    if (isRelevantPlayer && action.action) {
+      // Get player name
+      let playerName;
+      if (action.playerIndex === heroSeatIndex) {
+        playerName = 'Hero';
+      } else {
+        const position = getPlayerPosition(hand, action.playerIndex);
+        playerName = position.toUpperCase();
+      }
+      
+      // Format action using existing utility
+      const formattedAction = formatActionForSolver(action, bbSize);
+      
+      // Combine player and action
+      const actionText = `${playerName} ${formattedAction.toLowerCase()}`;
+      streetActions[street].push(actionText);
+    }
+  });
+  
+  // Add decision marker to current street
+  const currentStreet = decisionPoint.state.street;
+  if (streetActions[currentStreet]) {
+    streetActions[currentStreet].push('← decision');
+  }
+  
+  return streetActions;
+}
+
+/**
  * Assemble SnapshotInput object for solver analysis
  */
 function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillain) {
@@ -358,7 +416,7 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
   
   // Determine game type and pot type
   const gameType = header.gametype === 'tournament' ? 'mtt' : 'cash';
-  const potType = hand.info?.potType || 'srp';
+  const potType = hand.info?.potType && hand.info?.potType !== 'limped' ? hand.info?.potType : 'srp';
   
   // Determine who's next to act (hero)
   const heroPosition = positions.heroRelativePosition; // This should be 'ip' or 'oop'
@@ -366,6 +424,9 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
   // Get hero's hole cards
   const heroCards = hand.preflopSummary?.cards;
   const heroHand = heroCards ? `${heroCards.card1}${heroCards.card2}` : null;
+  
+  // Build street-by-street action history with decision marker
+  const streetActionsHistory = buildStreetActionsHistory(decisionPoint, hand, heroSeatIndex, primaryVillain);
   
   return {
     street: state.street,
@@ -382,7 +443,8 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
     game_type: gameType,
     pot_type: potType,
     next_to_act: heroPosition, // Add this field
-    heroCards: heroHand // Add hero's hole cards
+    heroCards: heroHand, // Add hero's hole cards
+    streetActionsHistory: streetActionsHistory // Add street-by-street context
   };
 }
 
@@ -493,6 +555,7 @@ module.exports = {
   GameStateTracker,
   detectDecisionPoints,
   selectPrimaryVillain,
+  buildStreetActionsHistory,
   assembleSnapshotInput,
   generateSnapshots,
   isVillainRelevantForSnapshot

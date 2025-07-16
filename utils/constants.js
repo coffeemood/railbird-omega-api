@@ -114,6 +114,151 @@ const matrix = cards.map((c1, c1Index) => {
 const matrixTable = Array.from(new Set(matrix.map((a) => a.value)))
   .map((value) => matrix.find((a) => a.value === value));
 
+  // Position mappings
+const POSITION_MAP = {
+  'empty': 0,
+  'utg': 1,
+  'utg+1': 2,
+  'utg+2': 3,
+  'utg+3': 4,
+  'mp': 5,
+  'mp+1': 6,
+  'mp+2': 7,
+  'lj': 8,
+  'hj': 9,
+  'co': 10,
+  'bu': 11,
+  'btn': 11,  // Alias
+  'sb': 12,
+  'bb': 13
+};
+
+// Position bucket mappings
+const POSITION_BUCKETS = {
+  'EARLY': ['utg', 'utg+1', 'utg+2', 'utg+3'],
+  'MP': ['mp', 'mp+1', 'mp+2', 'lj'],
+  'LP': ['hj', 'co', 'bu', 'btn'],
+  'BLINDS': ['sb', 'bb']
+};
+
+// Reverse mapping for quick lookup
+const POSITION_TO_BUCKET = {};
+Object.entries(POSITION_BUCKETS).forEach(([bucket, positions]) => {
+  positions.forEach(pos => {
+    POSITION_TO_BUCKET[pos] = bucket;
+  });
+});
+
+// Street mappings
+const STREET_MAP = {
+  'turn': 0,
+  'river': 1,
+  'flop': 2
+};
+
+// Game type mappings
+const GAME_TYPE_MAP = {
+  'cash': 0,
+  'mtt': 1
+};
+
+// Pot type mappings
+const POT_TYPE_MAP = {
+  'srp': 0,
+  '3bp': 1,
+  '4bp': 2
+};
+
+// Action type encoding
+const ACTION_ENCODING = {
+  'check': 0,
+  'x': 0,
+  'call': 1,
+  'c': 1,
+  'bet': 2,
+  'b': 2,
+  'raise': 3,
+  'r': 3,
+  'all-in': 4,
+  'allin': 4,
+  'a': 4,
+  'fold': 5,
+  'f': 5
+};
+
+// Action symbols for sequence generation
+const ACTION_SYMBOLS = {
+  0: 'X',  // Check
+  1: 'C',  // Call
+  2: 'B',  // Bet
+  3: 'R',  // Raise
+  4: 'A',  // All-in
+  5: 'F'   // Fold
+};
+
+// Bet size buckets (as % of pot)
+const BET_SIZE_BUCKETS = {
+  SMALL: 0,     // <33%
+  MEDIUM: 1,    // 33-66%
+  LARGE: 2,     // 66-100%
+  OVERBET: 3,   // >100%
+  ALLIN: 4      // All-in
+};
+
+// Board texture constants
+const BOARD_TEXTURE = {
+  // Flop archetypes
+  HHH: 25,
+  HHM: 50,
+  HHL: 75,
+  HMM: 100,
+  HML: 125,
+  HLL: 150,
+  MMM: 175,
+  MML: 200,
+  MLL: 225,
+  LLL: 240
+};
+
+// Card rank values
+const RANK_VALUES = {
+  '2': 0, '3': 1, '4': 2, '5': 3, '6': 4,
+  '7': 5, '8': 6, '9': 7, 'T': 8, 'J': 9,
+  'Q': 10, 'K': 11, 'A': 12
+};
+
+// Feature vector dimensions
+const VECTOR_DIMENSIONS = {
+  TOTAL: 71,  // Simplified to remove action encoding, add check frequency
+  STREET: 0,
+  GAME_TYPE: 1,
+  POT_TYPE: 2,
+  OOP_POS_START: 3,
+  OOP_POS_END: 16,
+  IP_POS_START: 17,
+  IP_POS_END: 30,
+  BOARD_TEX_START: 31,
+  BOARD_TEX_END: 38,
+  POSITION_FLAG: 39,
+  STACK_BB: 40,
+  STACK_BB_SOLVE: 41,
+  POT_BB: 42,
+  TAGS_START: 43,
+  TAGS_END: 58,
+  // Action frequencies (dims 59-64)
+  CHECK_FREQ: 59,
+  SIZE_BUCKETS_START: 60,
+  SIZE_BUCKETS_END: 64,
+  // Turn-specific features (dims 65-70)
+  TURN_RANK_BUCKET: 65,
+  TURN_PAIR_FLAG: 66,
+  FLUSH_COMPLETION: 67,
+  NEW_FD_FLAG: 68,
+  STRAIGHT_COMPLETION: 69,
+  RANK_NORM: 70
+};
+
+
 module.exports = {
   cardRankings,
   cardRankingsLow,
@@ -123,4 +268,16 @@ module.exports = {
   matrixTable,
   cardValue,
   handOrder,
+  POSITION_MAP,
+  POSITION_BUCKETS,
+  POSITION_TO_BUCKET,
+  STREET_MAP,
+  GAME_TYPE_MAP,
+  POT_TYPE_MAP,
+  ACTION_ENCODING,
+  ACTION_SYMBOLS,
+  BET_SIZE_BUCKETS,
+  BOARD_TEXTURE,
+  RANK_VALUES,
+  VECTOR_DIMENSIONS
 };
