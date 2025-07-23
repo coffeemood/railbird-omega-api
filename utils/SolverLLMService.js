@@ -22,15 +22,22 @@ const MistakeSchema = z.object({
 
 const SnapshotAnalysisSchema = z.object({
     id: z.number().describe("Snapshot index starting from 0"),
-    streetComment: z.string().max(150).describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
+    streetComment: z.string().max(250).describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
     mistake: MistakeSchema.nullable().describe("Mistake details if EV loss > 0.5BB, null otherwise")
 });
 
 const EnrichedHandAnalysisSchema = z.object({
-    headline: z.string().max(25).describe("3-5 word catchy title"),
-    tlDr: z.string().max(100).describe("One sentence summary of the hand"),
+    headline: z.string().max(30).describe("3-5 word catchy title"),
+    tlDr: z.string().max(150).describe("One sentence summary of the hand"),
     handScore: z.number().min(0).max(100).describe("Overall hand score: 100 - (total EV loss * 10)"),
     snapshots: z.array(SnapshotAnalysisSchema).describe("Analysis for each street snapshot")
+});
+
+const GenerationSpecSchema = z.object({
+    mainStrategicConcept: z.string().describe("The core lesson of the hand."),
+    keyFocusTags: z.array(z.string()).describe("An array of the 3-5 most important tags to focus on."),
+    narrativeArc: z.string().describe("A brief plan for the explanation."),
+    tone: z.string().describe("A coaching tone.")
 });
 
 class SolverLLMService {
@@ -40,7 +47,7 @@ class SolverLLMService {
             enableFallback: config.enableFallback !== false,
             enableMetrics: config.enableMetrics || false,
             temperature: config.temperature || 0.3,
-            maxTokens: config.maxTokens || 1000,
+            maxTokens: config.maxTokens || 1500,
             ...config
         };
 
@@ -76,27 +83,35 @@ class SolverLLMService {
                 models: {
                     fast: 'gpt-4.1-nano',
                     // balanced: 'ft:gpt-4o-mini-2024-07-18:personal:my-gto-coach-3:B3O6rADI',
-                    balanced: 'ft:gpt-4o-mini-2024-07-18:personal:railbird-003:B1QsQyKs',
-                    balanced: 'o4-mini',
-                    // balanced: 'ft:gpt-4o-mini-2024-07-18:personal:my-gto-coach-3:B3O6rADI',
-                    premium: 'o3'
+                    // balanced: 'ft:gpt-4o-mini-2024-07-18:personal::B1uEe3O1',
+                    balanced: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
+                    premium: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t'
                 },
                 costPer1K: { input: 0.005, output: 0.015 },
                 supportsResponsesAPI: true,
                 async analyze(prompt, options = {}) {
                     console.log('🤖 Starting OpenAI structured analysis...');
                     
+                    const responseSchema = options.responseSchema || EnrichedHandAnalysisSchema;
+                    const responseFormatName = options.responseSchema ? "generation_spec" : "poker_analysis";
+
                     // Use structured outputs with Zod schema for reliable parsing
-                    const response = await this.client.chat.completions.create({
+                    const request = {
                         model: options.model || this.models.balanced,
+                        // reasoning_effort: 'low',
                         messages: [
                             { role: 'system', content: prompt.system },
                             { role: 'user', content: prompt.user }
                         ],
-                        // temperature: options.temperature || 0.3,
+                        // temperature: options.temperature || 0.4,
                         // max_tokens: options.maxTokens || 1000,
-                        response_format: zodResponseFormat(EnrichedHandAnalysisSchema, "poker_analysis")
-                    });
+                        // response_format: zodResponseFormat(responseSchema, responseFormatName)
+                    };
+                    if (request.model === 'o3') request.reasoning_effort = 'low';
+                    if (request.model !== 'o3') request.temperature = 0.2;
+                    const response = await this.client.chat.completions.create(request);
+
+                    console.log(JSON.stringify(request.messages, null, 1));
 
                     const messageContent = response.choices[0].message.content;
                     
@@ -128,11 +143,46 @@ class SolverLLMService {
                     baseURL: 'https://api.x.ai/v1'
                 }),
                 models: {
-                    fast: 'grok-3-mini-beta',
-                    balanced: 'grok-3-mini-beta',
-                    premium: 'grok-3-mini-beta'
+                    fast: 'grok-3-mini',
+                    balanced: 'grok-3-mini',
+                    premium: 'grok-3-mini'
                 },
                 costPer1K: { input: 0.001, output: 0.003 },
+                supportsResponsesAPI: false,
+                async analyze(prompt, options = {}) {
+                    const response = await this.client.chat.completions.create({
+                        model: options.model || this.models.balanced,
+                        messages: [
+                            { role: 'system', content: prompt.system },
+                            { role: 'user', content: prompt.user }
+                        ],
+                        temperature: options.temperature || 0.3,
+                        max_tokens: options.maxTokens || 1000
+                    });
+                    
+                    return {
+                        content: response.choices[0].message.content,
+                        usage: response.usage,
+                        model: response.model
+                    };
+                }
+            });
+        }
+
+        // Mistral provider
+        if (process.env.MISTRAL_API_KEY) {
+            this.providers.set('mistral', {
+                name: 'mistral',
+                client: new OpenAI({
+                    apiKey: process.env.MISTRAL_API_KEY,
+                    baseURL: 'https://api.mistral.ai/v1'
+                }),
+                models: {
+                    fast: 'mistral-small-latest',
+                    balanced: 'ministral-8b-latest',
+                    premium: 'mistral-large-latest'
+                },
+                costPer1K: { input: 0.002, output: 0.006 },
                 supportsResponsesAPI: false,
                 async analyze(prompt, options = {}) {
                     const response = await this.client.chat.completions.create({
@@ -205,44 +255,47 @@ class SolverLLMService {
             // 2. Trim solver blocks for token efficiency
             const trimmedSnapshots = this.trimSnapshots(enrichedSnapshots);
 
-            // 3. Build prompt using LLMPromptBuilder
+            // 3. Run the analysis phase to get the generation spec
+            // const generationSpec = await this._runAnalysisPhase(handMeta, trimmedSnapshots, options);
+
+            // 4. Build the main generation prompt using the spec
             const prompt = this.promptBuilder.buildPrompt(handMeta, trimmedSnapshots);
 
             // Debug: Write prompt to file
             const fs = require('fs');
             fs.writeFileSync('/tmp/debug-prompt.json', JSON.stringify(prompt, null, 2));
-            console.log('🔍 Prompt saved to /tmp/debug-prompt.json');
+            console.log('🔍 Generation prompt saved to /tmp/debug-prompt.json');
 
-            console.log(prompt)
-
-            // 4. Validate prompt
+            // 5. Validate prompt
             const validation = this.promptBuilder.validatePrompt(prompt);
             if (!validation.isValid) {
                 throw new Error(`Invalid prompt: ${validation.issues.join(', ')}`);
             }
 
-            // 5. Select optimal provider
+            // 6. Select optimal provider for the main generation call
             const { provider, modelTier } = this.selectProvider(prompt, options);
 
-            // 6. Call LLM with structured input
+            // 7. Call LLM for the main generation
             const llmResponse = await this.callLLMWithRetry(provider, prompt, {
                 modelTier,
                 temperature: this.config.temperature,
-                maxTokens: this.config.maxTokens
+                maxTokens: this.config.maxTokens,
+                responseSchema: EnrichedHandAnalysisSchema
             });
 
-            // 7. Parse and validate structured response
-            const parsedResponse = this.parseStructuredResponse(llmResponse.content);
+            // 8. Parse and validate structured response
+            const parsedResponse = this.parseStructuredResponse(llmResponse.content, EnrichedHandAnalysisSchema);
 
-            // 8. Merge with original data
+            // 9. Merge with original data
             const enrichedAnalysis = this.mergeAnalysis(parsedResponse, enrichedSnapshots, handMeta);
 
-            // 9. Track metrics
+            // 10. Track metrics
             this.updateMetrics(provider.name, Date.now() - startTime, llmResponse.usage);
 
             return enrichedAnalysis;
 
         } catch (error) {
+            console.log(error);
             this.metrics.errorCount++;
             
             if (this.config.enableFallback) {
@@ -250,6 +303,37 @@ class SolverLLMService {
             }
             
             throw new Error(`LLM analysis failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Runs the initial analysis phase to generate a strategic plan.
+     * @private
+     */
+    async _runAnalysisPhase(handMeta, trimmedSnapshots, options) {
+        try {
+            console.log('🧠 Starting analysis phase...');
+            const analysisPrompt = this.promptBuilder.buildAnalysisPrompt(handMeta, trimmedSnapshots);
+
+            // Use a fast and cheap model for the analysis phase
+            const analysisOptions = { ...options, provider: 'openai', modelTier: 'fast' };
+            const { provider, modelTier } = this.selectProvider(analysisPrompt, analysisOptions);
+
+            const response = await this.callLLMWithRetry(provider, analysisPrompt, {
+                modelTier,
+                temperature: 0.1, // Low temperature for deterministic analysis
+                maxTokens: 500,
+                responseSchema: GenerationSpecSchema // Pass the correct schema for this phase
+            });
+
+            const generationSpec = this.parseStructuredResponse(response.content, GenerationSpecSchema);
+            console.log('✅ Analysis phase complete. Generation spec:', generationSpec);
+            return generationSpec;
+
+        } catch (error) {
+            console.warn(`⚠️ Analysis phase failed: ${error.message}. Proceeding without generation spec.`);
+            // Return a null or default spec if the analysis phase fails
+            return null;
         }
     }
 
@@ -306,6 +390,10 @@ class SolverLLMService {
             } else {
                 modelTier = 'premium';
             }
+        } else if (this.providers.has('mistral')) {
+            // Fallback to Mistral for quality
+            selectedProvider = this.providers.get('mistral');
+            modelTier = 'balanced';
         } else if (this.providers.has('grok')) {
             // Fallback to Grok for cost efficiency
             selectedProvider = this.providers.get('grok');
@@ -364,7 +452,8 @@ class SolverLLMService {
             return await provider.analyze(prompt, {
                 model,
                 temperature: options.temperature,
-                maxTokens: options.maxTokens
+                maxTokens: options.maxTokens,
+                responseSchema: options.responseSchema
             });
         } catch (error) {
             console.log({ error })
@@ -394,9 +483,10 @@ class SolverLLMService {
      */
     getFallbackProvider(primaryProviderName) {
         const fallbackOrder = {
-            'openai': ['grok', 'google'],
-            'grok': ['openai', 'google'],
-            'google': ['openai', 'grok']
+            'openai': ['mistral', 'grok', 'google'],
+            'mistral': ['openai', 'grok', 'google'],
+            'grok': ['openai', 'mistral', 'google'],
+            'google': ['openai', 'mistral', 'grok']
         };
 
         const fallbacks = fallbackOrder[primaryProviderName] || [];
@@ -413,7 +503,7 @@ class SolverLLMService {
      * @param {string} content - Raw LLM response
      * @returns {Object} Parsed and validated response
      */
-    parseStructuredResponse(content) {
+    parseStructuredResponse(content, schema = EnrichedHandAnalysisSchema) {
         try {
             // Clean up response (remove markdown if present)
             let jsonStr = content.trim();
@@ -426,7 +516,7 @@ class SolverLLMService {
             const parsed = JSON.parse(jsonStr);
             
             // Validate required fields
-            this.validateResponse(parsed);
+            this.validateResponse(parsed, schema);
             
             return parsed;
         } catch (error) {
@@ -439,28 +529,12 @@ class SolverLLMService {
      * @param {Object} response - Parsed response
      * @throws {Error} If validation fails
      */
-    validateResponse(response) {
-        const required = ['headline', 'tlDr', 'handScore', 'snapshots'];
-        const missing = required.filter(field => !response.hasOwnProperty(field));
-        
-        if (missing.length > 0) {
-            throw new Error(`Missing required fields: ${missing.join(', ')}`);
+    validateResponse(response, schema = EnrichedHandAnalysisSchema) {
+        try {
+            schema.parse(response);
+        } catch (error) {
+            throw new Error(`Response validation failed: ${error.errors.map(e => e.message).join(', ')}`);
         }
-
-        if (typeof response.handScore !== 'number' || response.handScore < 0 || response.handScore > 100) {
-            throw new Error('handScore must be a number between 0-100');
-        }
-
-        if (!Array.isArray(response.snapshots)) {
-            throw new Error('snapshots must be an array');
-        }
-
-        // Validate snapshot structure
-        response.snapshots.forEach((snapshot, index) => {
-            if (typeof snapshot.streetComment !== 'string') {
-                throw new Error(`Snapshot ${index} missing streetComment`);
-            }
-        });
     }
 
     /**

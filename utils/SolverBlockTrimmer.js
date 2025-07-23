@@ -72,18 +72,18 @@ class SolverBlockTrimmer {
         }
 
         if (solverBlock.rangeAdvantage) {
-            trimmed.rangeAdvantage = solverBlock.rangeAdvantage;
+            trimmed.rangeAdvantage = this.trimDecimalPlaces(solverBlock.rangeAdvantage, 1);
         }
 
         if (solverBlock.evHero !== undefined) {
-            trimmed.evHero = solverBlock.evHero;
+            trimmed.evHero = this.trimDecimalPlaces(solverBlock.evHero, 1);
         }
 
         // Optimal strategy with filtered actions
         if (solverBlock.optimalStrategy) {
             trimmed.optimalStrategy = {
                 recommendedAction: solverBlock.optimalStrategy.recommendedAction,
-                actionFrequencies: solverBlock.optimalStrategy.actionFrequencies,
+                actionFrequencies: this.trimDecimalPlaces(solverBlock.optimalStrategy.actionFrequencies, 1),
             };
         }
 
@@ -123,7 +123,7 @@ class SolverBlockTrimmer {
         
         // Include sim only if low (indicates uncertainty)
         if (solverBlock.sim !== undefined && solverBlock.sim < this.SIM_THRESHOLD) {
-            trimmed.sim = solverBlock.sim;
+            trimmed.sim = this.trimDecimalPlaces(solverBlock.sim, 1);
         }
 
         // Include blocker impact only if significant
@@ -133,14 +133,48 @@ class SolverBlockTrimmer {
             };
         }
 
+        // Include combo strategy if available (NEW: combo-specific strategy data)
+        if (solverBlock.comboStrategy) {
+            trimmed.comboStrategy = {
+                category: solverBlock.comboStrategy.category,
+                madeTier: solverBlock.comboStrategy.madeTier,
+                topActions: this.trimDecimalPlaces(solverBlock.comboStrategy.topActions?.slice(0, 2) || [], 1), // Top 2 actions
+                recommendedAction: solverBlock.comboStrategy.recommendedAction,
+                confidence: solverBlock.comboStrategy.confidence
+            };
+        }
+
         return trimmed;
     }
 
     /**
+     * Round numbers to specified decimal places, handling objects and arrays recursively
+     * @param {any} value - Value to process
+     * @param {number} decimals - Number of decimal places
+     * @returns {any} Value with numbers rounded to specified decimal places
+     */
+    trimDecimalPlaces(value, decimals = 1) {
+        if (typeof value === 'number') {
+            return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
+        }
+        if (Array.isArray(value)) {
+            return value.map(item => this.trimDecimalPlaces(item, decimals));
+        }
+        if (value && typeof value === 'object') {
+            const trimmed = {};
+            for (const [key, val] of Object.entries(value)) {
+                trimmed[key] = this.trimDecimalPlaces(val, decimals);
+            }
+            return trimmed;
+        }
+        return value;
+    }
+
+    /**
      * Get top N categories by percentOfRange
-     * @param {Array} categories - Array of category objects
+     * @param {Array} categories - Array of category objects using HandArchetype system
      * @param {number} limit - Maximum number of categories to return
-     * @returns {Array} Top categories by percentOfRange
+     * @returns {Array} Top categories by percentOfRange with simplified format
      */
     getTopCategories(categories, limit) {
         if (!Array.isArray(categories)) return [];
@@ -149,9 +183,11 @@ class SolverBlockTrimmer {
             .sort((a, b) => (b.percentOfRange || 0) - (a.percentOfRange || 0))
             .slice(0, limit)
             .map(cat => ({
-                name: cat.category,
-                percentOfRange: cat.percentOfRange.toFixed(2),
-                examples: cat.hands.slice(0, 3),
+                madeTier: cat.archetype?.madeTier || 'Unknown',
+                drawTier: cat.archetype?.drawFlags.join(', '),
+                percentOfRange: this.trimDecimalPlaces(cat.percentOfRange || 0, 1),
+                // examples: (cat.combos || cat.hands || []).slice(0, 3),
+                strategyActions: this.trimDecimalPlaces((cat.strategyActions || []).slice(0, 2), 1)
             }))
     }
 
@@ -164,11 +200,11 @@ class SolverBlockTrimmer {
         const trimmed = {};
 
         // Include specific fields only
-        const fieldsToInclude = ['madeTier', 'pairSubtype', 'drawFlags', 'equityVsRange'];
+        const fieldsToInclude = ['madeTier', 'pairSubtype', 'drawFlags', 'equityVsRange', 'nextStreetSummary'];
         
         fieldsToInclude.forEach(field => {
             if (handFeatures[field] !== undefined) {
-                trimmed[field] = handFeatures[field];
+                trimmed[field] = this.trimDecimalPlaces(handFeatures[field], 1);
             }
         });
 

@@ -117,7 +117,7 @@ class GameStateTracker {
     return {
       street: this.currentStreet,
       board: [...this.boardCards],
-      pot: this.pot,
+      pot: this.pot.toFixed(1),
       playerStacks: { ...this.playerStacks },
       playerStatus: { ...this.playerStatus },
       streetActions: this.streetActions[this.currentStreet] || [],
@@ -381,6 +381,73 @@ function buildStreetActionsHistory(decisionPoint, hand, heroSeatIndex, primaryVi
 }
 
 /**
+ * Calculate pot odds for hero facing a bet or raise
+ */
+function calculatePotOdds(decisionPoint, state, bbSize, cumulativeActions) {
+  const { heroAction } = decisionPoint;
+  
+  // Use the already filtered cumulativeActions - last action should be villain's
+  if (!cumulativeActions || cumulativeActions.length === 0) {
+    return null; // No actions to check
+  }
+
+  console.log({ decisionPoint: JSON.stringify(decisionPoint), cumulativeActions: JSON.stringify(cumulativeActions) });
+  
+  // Get the last action from cumulativeActions (which is already formatted)
+  const lastFormattedAction = cumulativeActions[cumulativeActions.length - 1];
+  
+  // Check if it's a bet or raise (formatted actions look like "Bet 2.03" or "Raise 5.50")
+  if (!lastFormattedAction || 
+      (!lastFormattedAction.toLowerCase().startsWith('bet ') && 
+       !lastFormattedAction.toLowerCase().startsWith('raise '))) {
+    return null; // Hero not facing a bet/raise
+  }
+  
+  // Extract bet amount from formatted string like "Bet 2.03"
+  const match = lastFormattedAction.match(/^(bet|raise)\s+([\d.]+)/i);
+  if (!match) {
+    return null; // Could not parse bet amount
+  }
+  
+  const betAmountBB = parseFloat(match[2]);
+  const potBB = parseFloat(state.pot) / bbSize;
+  const heroDecision = heroAction.action?.type;
+  
+  // Calculate pot odds: amount to call / (pot + amount to call)
+  const potOdds = betAmountBB / (potBB + betAmountBB);
+  const impliedOddsPercentage = (potOdds * 100).toFixed(1);
+  
+  // Convert to proper poker odds format (e.g., 3:1, 2:1)
+  const potSize = potBB;
+  const callSize = betAmountBB;
+  const potOddsRatio = `${(potSize / callSize).toFixed(1)}:1`;
+  
+  // Determine if this is a good/bad/marginal pot odds situation
+  let potOddsCategory;
+  if (potOdds < 0.25) {
+    potOddsCategory = 'EXCELLENT'; // Getting 3:1 or better
+  } else if (potOdds < 0.33) {
+    potOddsCategory = 'GOOD'; // Getting 2:1 to 3:1
+  } else if (potOdds < 0.5) {
+    potOddsCategory = 'FAIR'; // Getting 1:1 to 2:1
+  } else {
+    potOddsCategory = 'POOR'; // Getting worse than 1:1
+  }
+  
+  return {
+    isFacingBet: true,
+    betAmountBB: parseFloat(betAmountBB.toFixed(1)),
+    potBB: parseFloat(potBB.toFixed(1)),
+    potOdds: parseFloat(potOdds.toFixed(3)),
+    potOddsRatio: potOddsRatio,
+    impliedOddsPercentage: parseFloat(impliedOddsPercentage),
+    potOddsCategory: potOddsCategory,
+    heroDecision: heroDecision,
+    isGoodPotOdds: potOddsCategory === 'EXCELLENT' || potOddsCategory === 'GOOD'
+  };
+}
+
+/**
  * Assemble SnapshotInput object for solver analysis
  */
 function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillain) {
@@ -428,6 +495,9 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
   // Build street-by-street action history with decision marker
   const streetActionsHistory = buildStreetActionsHistory(decisionPoint, hand, heroSeatIndex, primaryVillain);
   
+  // Calculate pot odds if hero is facing a bet/raise
+  const potOddsInfo = calculatePotOdds(decisionPoint, state, bbSize, cumulativeActions);
+  
   return {
     street: state.street,
     board: state.board,
@@ -444,7 +514,8 @@ function assembleSnapshotInput(decisionPoint, hand, heroSeatIndex, primaryVillai
     pot_type: potType,
     next_to_act: heroPosition, // Add this field
     heroCards: heroHand, // Add hero's hole cards
-    streetActionsHistory: streetActionsHistory // Add street-by-street context
+    streetActionsHistory: streetActionsHistory, // Add street-by-street context
+    potOdds: potOddsInfo // Add pot odds calculation
   };
 }
 

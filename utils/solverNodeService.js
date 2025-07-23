@@ -9,6 +9,9 @@ const { buildFeatureVector } = require('./vectorSearch');
 // Import Solves collection for flop nodes
 const Solves = require('../db/collections/Solves');
 
+// Import bet sizing parser
+const { parseActionArray } = require('./betSizingParser');
+
 // Initialize the modular service with metrics enabled
 const modularService = new ModularSolverNodeService({
     enableMetrics: true,
@@ -75,8 +78,12 @@ async function getUnpackedNode(leanNodeMeta) {
  * @returns {Promise<Object>} SolverBlock built using modular functions
  */
 async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similarityScore = 1.0, heroHand = null, nodeId = null) {
+  const buildStartTime = Date.now();
+  console.log(`🔨 [TIMING] Starting buildSolverBlockFromNodeData`);
+  
   try {
     // Find the target node
+    const nodeSearchStartTime = Date.now();
     let targetNode;
     if (nodeId && Array.isArray(nodeAnalyses)) {
       // Direct lookup by node_identifier for TURN nodes
@@ -92,6 +99,7 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     } else {
       targetNode = nodeAnalyses;
     }
+    console.log(`🔍 [TIMING] Node search/selection: ${Date.now() - nodeSearchStartTime}ms`);
 
     if (!targetNode) {
       throw new Error('No target node found for SolverBlock building');
@@ -100,12 +108,12 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     // Extract basic node information
     const solverBlock = {
       nodeId: targetNode.node_id || 'unknown',
-      street: targetNode.street || snapshotInput.street,
-      board: targetNode.board || snapshotInput.board,
-      pot: targetNode.pot || snapshotInput.pot_bb,
+      street: snapshotInput.street,
+      board: snapshotInput.board,
+      pot: snapshotInput.pot_bb,
       stacks: {
-        oop: targetNode.stack_oop || snapshotInput.stack_bb,
-        ip: targetNode.stack_ip || snapshotInput.stack_bb
+        oop: snapshotInput.stack_bb,
+        ip: snapshotInput.stack_bb
       },
       positions: snapshotInput.positions || { oop: 'bb', ip: 'bu' },
       nextToAct: targetNode.next_to_act === 'IP' ? 'ip' : 'oop',
@@ -117,7 +125,9 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     
     try {
       // Board Analysis
+      const boardAnalysisStartTime = Date.now();
       solverBlock.boardAnalysis = modularService.analyzeBoardTexture(board);
+      console.log(`🏔️  [TIMING] Board analysis: ${Date.now() - boardAnalysisStartTime}ms`);
     } catch (error) {
       console.warn('Board analysis failed:', error.message);
       solverBlock.boardAnalysis = { texture: 'Unknown', isPaired: false, textureTags: [] };
@@ -131,12 +141,14 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     
     try {
       // Range Equity Analysis
+      const rangeEquityStartTime = Date.now();
       solverBlock.rangeAdvantage = modularService.calculateRangeEquity(
         oopRange,
         ipRange,
         board,
         solverBlock.nextToAct
       );
+      console.log(`⚖️  [TIMING] Range equity analysis: ${Date.now() - rangeEquityStartTime}ms`);
     } catch (error) {
       console.warn('Range equity analysis failed:', error.message);
       solverBlock.rangeAdvantage = {
@@ -167,13 +179,15 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
         );
 
         // Complete Range Analysis
+        const rangeAnalysisStartTime = Date.now();
         const rangeAnalysis = modularService.analyzeRangeComplete(
           heroHand,
           villainRange,
           board,
-          solverBlock.nextToAct === 'oop' ? oopRange : ipRange
+          solverBlock.nextToAct === 'oop' ? oopRange : ipRange,
+          targetNode.comboData ? JSON.stringify(targetNode.comboData) : null
         );
-        
+        console.log(`📊 [TIMING] Complete range analysis: ${Date.now() - rangeAnalysisStartTime}ms`);
         
         solverBlock.heroRange = rangeAnalysis.heroRange;
         solverBlock.villainRange = rangeAnalysis.villainRange;
@@ -194,8 +208,17 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     try {
       const actions = targetNode.actionsOOP || targetNode.actionsIP || [];
       if (actions.length > 0) {
+        // Parse actions to include bet sizing information
+        // Get solver pot and actual pot for sizing calculations
+        const solverPotBB = targetNode.pot || snapshotInput.pot_bb;
+        const actualPotBB = snapshotInput.pot_bb;
+        const bbSize = snapshotInput.bb_size || 2;
+        
+        // Parse all actions to include sizing
+        const parsedActions = parseActionArray(actions, solverPotBB, actualPotBB, bbSize);
+        
         // Find recommended action (highest frequency)
-        const recommendedAction = actions.reduce((best, current) => 
+        const recommendedAction = parsedActions.reduce((best, current) => 
           current.frequency > best.frequency ? current : best
         );
         
@@ -203,32 +226,88 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
           recommendedAction: {
             action: recommendedAction.action,
             ev: recommendedAction.ev,
-            frequency: recommendedAction.frequency
+            frequency: recommendedAction.frequency,
+            actionType: recommendedAction.actionType,
+            sizing: recommendedAction.sizing
           },
-          actionFrequencies: actions.map(action => ({
+          actionFrequencies: parsedActions.map(action => ({
             action: action.action,
             frequency: action.frequency,
-            ev: action.ev
+            ev: action.ev,
+            actionType: action.actionType,
+            sizing: action.sizing
           }))
         };
       } else {
         solverBlock.optimalStrategy = {
-          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0 },
+          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0, actionType: 'check', sizing: null },
           actionFrequencies: []
         };
       }
     } catch (error) {
       console.warn('Strategy analysis failed:', error.message);
       solverBlock.optimalStrategy = {
-        recommendedAction: { action: 'Check', ev: 0, frequency: 1.0 },
+        recommendedAction: { action: 'Check', ev: 0, frequency: 1.0, actionType: 'check', sizing: null },
         actionFrequencies: []
       };
     }
 
+    // Add combo-specific strategy (NEW: extract strategy for hero's hand category)
+    if (heroHand && targetNode.comboData) {
+      try {
+        // Get range string for the acting player and villain
+        const actingRange = solverBlock.nextToAct === 'oop' ? oopRange : ipRange;
+        const villainRange = solverBlock.nextToAct === 'oop' ? ipRange : oopRange;
+        
+        // Extract combo strategy using the new modular function with two-board approach
+        const comboStrategy = modularService.extractComboStrategy(
+          heroHand,
+          board,      // actual_board where hero's hand is being analyzed
+          targetNode.board,      // solver_board where strategies were calculated (same for now)
+          actingRange,
+          targetNode.comboData
+        );
+        
+        // Parse bet sizing for combo strategy actions
+        if (comboStrategy.topActions && comboStrategy.topActions.length > 0) {
+          const solverPotBB = targetNode.pot || snapshotInput.pot_bb;
+          const actualPotBB = snapshotInput.pot_bb;
+          const bbSize = snapshotInput.bb_size || 2;
+          
+          comboStrategy.topActions = parseActionArray(
+            comboStrategy.topActions,
+            solverPotBB,
+            actualPotBB,
+            bbSize
+          );
+        }
+        
+        solverBlock.comboStrategy = comboStrategy;
+        
+      } catch (error) {
+        console.warn('Combo strategy extraction failed:', error.message);
+        solverBlock.comboStrategy = {
+          heroHand,
+          category: "Unknown",
+          madeTier: "Unknown",
+          drawFlags: [],
+          topActions: [
+            { action: "Check", frequency: 100.0, ev: 0.0 }
+          ],
+          recommendedAction: "Check",
+          confidence: "low"
+        };
+      }
+    }
+
+    const totalBuildTime = Date.now() - buildStartTime;
+    console.log(`✅ [TIMING] Total buildSolverBlockFromNodeData completed: ${totalBuildTime}ms`);
+    
     return solverBlock;
     
   } catch (error) {
-    console.error('Error building SolverBlock from node data:', error);
+    const totalBuildTime = Date.now() - buildStartTime;
+    console.error(`❌ [TIMING] Error building SolverBlock after ${totalBuildTime}ms:`, error);
     throw new Error(`Failed to build SolverBlock: ${error.message}`);
   }
 }

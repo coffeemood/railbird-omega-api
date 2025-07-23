@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { decodeCompactNode, encodeNodeToCompact, decompressZstd, compressZstd, buildFeatureVector, extractBoardTextureJs, batchBuildFeatureVectors, cosineSimilarity, generateActionSequence, leanMetaToFeatureVector, canonicalizeActionHistory, calculateActionHash, formatActionStringJs, generateRangeStats, calculateActionFrequenciesJs, parseActionString, canonicalizeActionTokens, analyzeSnapshot, transformCompactToSolverBlock, calculateRangeAdvantageApi, calculateBlockerImpactApi, analyzeBoardTextureApi, analyzeHandFeatures, analyzeRangeComplete, decodeCompressedNode, unpackAndTransformNode, calculateRangeEquity } = nativeBinding
+const { decodeCompactNode, encodeNodeToCompact, decompressZstd, compressZstd, buildFeatureVector, extractBoardTextureJs, batchBuildFeatureVectors, cosineSimilarity, generateActionSequence, leanMetaToFeatureVector, canonicalizeActionHistory, calculateActionHash, formatActionStringJs, generateRangeStats, calculateActionFrequenciesJs, parseActionString, canonicalizeActionTokens, analyzeSnapshot, transformCompactToSolverBlock, calculateRangeAdvantageApi, calculateBlockerImpactApi, analyzeBoardTextureApi, analyzeHandFeatures, analyzeRangeComplete, decodeCompressedNode, unpackAndTransformNode, calculateRangeEquity, getHandArchetypeApi, extractComboStrategyApi } = nativeBinding
 
 module.exports.decodeCompactNode = decodeCompactNode
 module.exports.encodeNodeToCompact = encodeNodeToCompact
@@ -339,3 +339,5 @@ module.exports.analyzeRangeComplete = analyzeRangeComplete
 module.exports.decodeCompressedNode = decodeCompressedNode
 module.exports.unpackAndTransformNode = unpackAndTransformNode
 module.exports.calculateRangeEquity = calculateRangeEquity
+module.exports.getHandArchetypeApi = getHandArchetypeApi
+module.exports.extractComboStrategyApi = extractComboStrategyApi

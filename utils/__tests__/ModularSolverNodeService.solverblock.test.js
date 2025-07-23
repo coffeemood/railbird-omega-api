@@ -565,6 +565,228 @@ describe('SolverBlock Building Functions', () => {
         });
     });
 
+    describe('8. Combo Strategy Functions', () => {
+        test('should extract combo strategy for hero hand with valid combo data', () => {
+            try {
+                // Mock combo data in solver format
+                const comboDataMap = {
+                    'AhKh': 'B 9.75:10.0:21.15;B 6.5:60.0:21.87;B 4.23:5.0:21.84;B 2.15:25.0:21.85;X:0.0:20.9',
+                    'QsQd': 'B 6.5:80.0:22.50;B 2.15:20.0:22.30;X:0.0:21.90',
+                    'JhTh': 'B 2.15:30.0:19.50;X:70.0:19.20',
+                    '9s8s': 'X:100.0:18.50'
+                };
+                
+                const rangeString = 'AhKh:1.0,QsQd:1.0,JhTh:1.0,9s8s:1.0';
+                const heroHand = 'AhKh';
+                
+                const result = service.extractComboStrategy(
+                    heroHand,
+                    sampleBoard,  // actual_board where hero's hand is
+                    sampleBoard,  // solver_board where strategies were calculated
+                    rangeString,
+                    comboDataMap
+                );
+                
+                console.log('Combo strategy result:', result);
+                
+                // Verify structure
+                expect(result).toHaveProperty('heroHand');
+                expect(result).toHaveProperty('category');
+                expect(result).toHaveProperty('madeTier');
+                expect(result).toHaveProperty('drawFlags');
+                expect(result).toHaveProperty('topActions');
+                expect(result).toHaveProperty('recommendedAction');
+                expect(result).toHaveProperty('confidence');
+                
+                // Verify data types
+                expect(result.heroHand).toBe(heroHand);
+                expect(typeof result.category).toBe('string');
+                expect(Array.isArray(result.drawFlags)).toBe(true);
+                expect(Array.isArray(result.topActions)).toBe(true);
+                expect(typeof result.recommendedAction).toBe('string');
+                expect(typeof result.confidence).toBe('string');
+                
+                // Verify top actions structure (should have top 2 actions)
+                expect(result.topActions.length).toBeGreaterThan(0);
+                expect(result.topActions.length).toBeLessThanOrEqual(2);
+                
+                if (result.topActions.length > 0) {
+                    const action = result.topActions[0];
+                    expect(action).toHaveProperty('action');
+                    expect(action).toHaveProperty('frequency');
+                    expect(action).toHaveProperty('ev');
+                    
+                    expect(typeof action.action).toBe('string');
+                    expect(typeof action.frequency).toBe('number');
+                    expect(typeof action.ev).toBe('number');
+                }
+                
+                console.log('✅ Combo strategy extraction working correctly');
+                
+            } catch (error) {
+                if (error.message.includes('Cannot find module')) {
+                    console.log('⚠️  Skipping combo strategy test - NAPI not available');
+                    return;
+                }
+                throw error;
+            }
+        });
+
+        test('should handle different hand categories for combo strategy', () => {
+            try {
+                const testScenarios = [
+                    {
+                        hand: 'AhKh',
+                        board: ['Ad', 'Kd', 'Qc'],
+                        desc: 'two pair',
+                        comboData: 'B 6.5:70.0:25.50;B 2.15:30.0:25.20;X:0.0:24.90'
+                    },
+                    {
+                        hand: 'QsQd', 
+                        board: ['Qh', '7d', '2c'],
+                        desc: 'set',
+                        comboData: 'B 9.75:90.0:28.50;B 6.5:10.0:28.30;X:0.0:27.80'
+                    },
+                    {
+                        hand: 'JhTh',
+                        board: ['9h', '8d', '2c'],
+                        desc: 'straight draw',
+                        comboData: 'B 2.15:50.0:19.50;X:50.0:19.20'
+                    }
+                ];
+                
+                testScenarios.forEach(({ hand, board, desc, comboData }) => {
+                    const comboDataMap = { [hand]: comboData };
+                    const rangeString = `${hand}:1.0`;
+                    
+                    const result = service.extractComboStrategy(
+                        hand,
+                        board,  // actual_board
+                        board,  // solver_board (same in this test)
+                        rangeString,
+                        comboDataMap
+                    );
+                    
+                    console.log(`${desc} (${hand}):`, {
+                        category: result.category,
+                        madeTier: result.madeTier,
+                        drawFlags: result.drawFlags,
+                        topActionsCount: result.topActions.length,
+                        recommendedAction: result.recommendedAction,
+                        equityVsRange: result.equityVsRange,
+                        confidence: result.confidence
+                    });
+                    
+                    expect(result.heroHand).toBe(hand);
+                    expect(result.topActions.length).toBeGreaterThan(0);
+                    expect(['low', 'medium', 'high']).toContain(result.confidence);
+                });
+                
+                console.log('✅ Multiple hand categories processed successfully');
+                
+            } catch (error) {
+                if (error.message.includes('Cannot find module')) {
+                    console.log('⚠️  Skipping hand categories test - NAPI not available');
+                    return;
+                }
+                throw error;
+            }
+        });
+
+        test('should parse complex combo data format correctly', () => {
+            try {
+                // Test with complex realistic combo data
+                const complexComboData = {
+                    'AhKh': 'B 12.75:5.5:23.45;B 9.25:15.2:23.32;B 6.50:35.8:23.18;B 4.25:18.9:23.05;B 2.15:24.6:22.95;X:0.0:22.80'
+                };
+                
+                const result = service.extractComboStrategy(
+                    'AhKh',
+                    sampleBoard,  // actual_board
+                    sampleBoard,  // solver_board
+                    'AhKh:1.0',
+                    complexComboData
+                );
+                
+                console.log('Complex combo data result:', {
+                    topActions: result.topActions,
+                    recommendedAction: result.recommendedAction
+                });
+                
+                // Should have exactly 2 top actions (as per our implementation)
+                expect(result.topActions).toHaveLength(2);
+                
+                // First action should be the highest frequency
+                const firstAction = result.topActions[0];
+                const secondAction = result.topActions[1];
+                
+                expect(firstAction.frequency).toBeGreaterThanOrEqual(secondAction.frequency);
+                
+                // Recommended action should match the highest frequency action
+                expect(result.recommendedAction).toBe(firstAction.action);
+                
+                console.log('✅ Complex combo data parsing working correctly');
+                
+            } catch (error) {
+                if (error.message.includes('Cannot find module')) {
+                    console.log('⚠️  Skipping complex parsing test - NAPI not available');
+                    return;
+                }
+                throw error;
+            }
+        });
+
+        test('should integrate combo strategy with existing solver block building', () => {
+            try {
+                // Mock a flop node with combo data for integration test
+                const mockFlopNode = {
+                    _id: 'test-flop-node',
+                    street: 'FLOP',
+                    pot: 10.0,
+                    stackOOP: 100.0,
+                    stackIP: 95.0,
+                    nextToAct: 'oop',
+                    positions: { oop: 'bb', ip: 'bu' },
+                    rangeStats: {
+                        oop: 'AhKh:1.0,QsQd:1.0',
+                        ip: 'JhTh:1.0,9s8s:1.0'
+                    },
+                    actionsOOP: [
+                        { action: 'Check', frequency: 60.0, ev: 22.5 },
+                        { action: 'B 6.5', frequency: 40.0, ev: 22.8 }
+                    ],
+                    comboData: {
+                        'AhKh': 'B 6.5:70.0:23.2;X:30.0:22.9',
+                        'QsQd': 'B 6.5:90.0:25.1;X:10.0:24.8'
+                    }
+                };
+                
+                // This tests the integration without actually calling buildSolverBlockFromFlopNode
+                // since that would require the full Solves class setup
+                const comboStrategy = service.extractComboStrategy(
+                    'AhKh',
+                    sampleBoard,  // actual_board
+                    sampleBoard,  // solver_board
+                    mockFlopNode.rangeStats.oop,
+                    mockFlopNode.comboData
+                );
+                
+                expect(comboStrategy).toHaveProperty('heroHand', 'AhKh');
+                expect(comboStrategy).toHaveProperty('topActions');
+                expect(comboStrategy.topActions.length).toBeGreaterThan(0);
+                
+                console.log('✅ Combo strategy integration test passed');
+                
+            } catch (error) {
+                if (error.message.includes('Cannot find module')) {
+                    console.log('⚠️  Skipping integration test - NAPI not available');
+                    return;
+                }
+                throw error;
+            }
+        });
+    });
+
     describe('7. Performance and Metrics', () => {
         test('should track performance metrics for solver block building', () => {
             try {

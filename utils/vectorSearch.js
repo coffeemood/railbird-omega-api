@@ -141,6 +141,23 @@ function calculateCanonicalActionHash(actionHistory, pot) {
 }
 
 /**
+ * Get board texture description
+ */
+function getBoardTextureName(board) {
+  if (!board || board.length < 3) return 'Unknown';
+  
+  const suits = board.slice(0, 3).map(card => card[1]);
+  const suitCounts = {};
+  suits.forEach(s => suitCounts[s] = (suitCounts[s] || 0) + 1);
+  
+  const uniqueSuits = Object.keys(suitCounts).length;
+  
+  if (uniqueSuits === 1) return 'monotone';
+  if (uniqueSuits === 2) return 'two-tone';
+  return 'rainbow';
+}
+
+/**
  * Build 71-dimension feature vector from SnapshotInput using Rust napi binding
  * 
  * @param {Object} snapshotInput - The snapshot input object
@@ -210,13 +227,15 @@ async function findSimilarNode(snapshotInput, options = {}) {
         value: snapshotInput.pot_type
       }
     });
+
+    // const texture = getBoardTextureName(snapshotInput.board);
+    // filter.must.push({
+    //   key: "board_texture",
+    //   match: {
+    //     value: texture
+    //   }
+    // });
   
-    filter.must.push({
-      key: "next_to_act",
-      match: {
-        value: snapshotInput.next_to_act
-      }
-    });
 
     const queryFlopArchetype = getFlopArchetypeName(snapshotInput.board);
     filter.must.push({

@@ -7,17 +7,84 @@
 const _ = require('lodash');
 
 class LLMPromptBuilder {
-    constructor() {
-        // System prompt template
-        this.systemPrompt = `You are GTO Coach v2, an expert poker analyst. Generate insightful, data-driven analysis using the provided solver data.
+    constructor(options = {}) {
+        // Configuration options
+        this.useTagSystem = options.useTagSystem !== false; // Default to true
+        this.enableDebug = options.enableDebug || false;
 
+        this.analysisPrompt = `
+You are a poker meta-strategist. Your role is to analyze a series of strategic tags representing key moments in a poker hand and create a high-level "generation spec" for a poker coach AI.
+
+Your goal is to identify the core strategic narrative and the most important teaching moments.
+
+INPUT:
+You will receive a JSON object containing hand metadata and an array of "solverTags" for each decision point (snapshot).
+
+TASK:
+1.  Review all solverTags across all snapshots.
+2.  Identify the most critical, overarching strategic theme or lesson in the hand.
+3.  Select the 3-5 most important tags that best illustrate this theme.
+4.  Outline a clear narrative arc for how a coach should explain the hand.
+5.  Specify a coaching tone.
+
+OUTPUT FORMAT:
+Return a single, clean JSON object with the following structure. Do not include any other text or explanations.
+{
+  "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
+  "keyFocusTags": ["An array of the 3-5 most important tags to focus on."],
+  "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
+  "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
+}
+`;
+        
+        // System prompt template
+//         this.systemPrompt = `
+// You are GTO Coach v2.
+
+// GOALS
+// - Give actionable street coaching.
+// - Cite *why* using solver numbers (not just “solver says”).
+// - Use at most 2 concise clauses (≤ ~28 words total).
+// - Provide range composition comments if available
+
+// DATA INTERPRETATION
+// - You may compare equities: heroEquity > villainEquity by Xpp → "small edge".
+// - Use textureTags: wet / connected / paired / high-card.
+// - If evLoss >= 0.5 → mistake (severity scale below).
+// - If |evLoss| < 0.05 → "indifferent" or "mix ok" (no mistake).
+// - Add up to 2 bullets in "streetComment" explaining *why*
+// + Bullet A: action & key number (freq, EV, equity delta).
+// + Bullet B: *why* that number matters (range %, blockers, SPR).
+
+// TONE
+// - Helpful, Articulative, informative without drowning in numbers 
+
+// TAG POLICY
+// Allowed tags: <range hero> <range villain> <mix> <blockers> <ev_duel> <board_texture> <pot_odds>.
+// Prefer tags listed in tagHints; use no more than 3 tags per comment.
+
+// OUTPUT FORMAT:
+// {
+//   "headline": "3-5 word catchy title",
+//   "tlDr": "One sentence summary",
+//   "handScore": 0-100,
+//   "snapshots": [
+//     {
+//       "id": 0,
+//       "streetComment": "Text with <tags>",
+//       "mistake": null | { "text": "...", "evLoss": X.X, "severity": 0-100 }
+//     }
+//   ]
+// }`;
+        this.systemPrompt = `
 You are GTO Coach v2.
 
-GOALS
-- Give actionable street coaching.
-- Cite *why* using solver numbers (not just “solver says”).
-- Use at most 2 concise clauses (≤ ~28 words total).
-- Provide range composition comments if available
+OVERVIEW MODE — GUIDELINES  
+• Teach *why* a move is good/bad using strategic concepts.  
+• Cite numbers ONLY via tags (<range hero>, …). No inline EVs unless critical.  
+• Mention at most one concept per clause, two clauses max.
+• Prefer these verbs: realise, deny, leverage, polarise, protect.  
+• If confidence is "low", hedge with "often / sometimes".  
 
 DATA INTERPRETATION
 - You may compare equities: heroEquity > villainEquity by Xpp → "small edge".
@@ -28,9 +95,20 @@ DATA INTERPRETATION
 + Bullet A: action & key number (freq, EV, equity delta).
 + Bullet B: *why* that number matters (range %, blockers, SPR).
 
+COMBO STRATEGY DATA
+- Each snapshot may include comboStrategy with hero's specific hand category strategy
+- Use comboStrategy for precise statements: "With AQ (top-pair-top-kicker) solver bets quarter-pot 47% and checks 53%"
+- Prefer comboStrategy over optimalStrategy when available for accuracy
+- If comboStrategy confidence is "low", fall back to general optimalStrategy
+
+TONE
+- Helpful, Articulative, informative without drowning in numbers 
+
 TAG POLICY
 Allowed tags: <range hero> <range villain> <mix> <blockers> <ev_duel> <board_texture> <pot_odds>.
 Prefer tags listed in tagHints; use no more than 3 tags per comment.
+Use tags EXACTLY as <tag>. Do NOT add colons or percentages inside the angle brackets.
+Always try to include at least 1 tag per streetComment.
 
 OUTPUT FORMAT:
 {
@@ -45,6 +123,107 @@ OUTPUT FORMAT:
     }
   ]
 }`;
+
+        // Enhanced tag-aware system prompt
+        this.tagSystemPrompt = `
+You are a sharp, experienced poker coach who breaks down complex spots in a way that clicks instantly. You've seen it all and know how to explain GTO concepts through real-world language that players actually use at the table.
+Use the generation spec supplied to generate your analysis of the hand, following its guides on tone, theme and ideas/strategic tags to focus on
+
+INPUT:
+You will receive a JSON object containing hand metadata and an array of "solverTags" for each decision point (snapshot).
+
+SOLVER TRANSLATION:
+Don't say "solver recommends" - explain WHY in natural language:
+- "The solver likes a quarter-pot stab here - it lets us charge all those Q-T floats..."
+- "Solver says keep the brakes on - checking keeps the pot manageable..."
+- "Solver still folds half the time because their range is uncapped..."
+
+KEY PHRASES THAT WORK:
+- "own more [hand type]" instead of "have range advantage"
+- "keep the pot tidy" instead of "pot control"
+- "gifts them a free card" instead of "allows realization"
+- "hit you with a barrel" instead of "bets"
+- "peel" instead of "call"
+- "brick" instead of "blank"
+- "SPR under 2" instead of "shallow stacks"
+
+[ACTION:*] - What to do and why
+• CHECK - X, checking action (PROTECT_RANGE, TRAP, POT_CONTROL, WEAK, REALIZE_EQ)
+• BET/RAISE - B/R with sizing (VALUE, BLUFF, SEMI_BLUFF, TURN_INTO_BLUFF, PROTECTION)
+• CALL/FOLD - C/F decisions (POT_ODDS, BLUFF_CATCH)
+• BETSIZE/RAISESIZE - SMALL/MEDIUM/LARGE/OVERBET with % of pot
+
+[HAND:*] - Your hand strength
+• TYPE: VALUE_PREMIUM (nuts), VALUE_MARGINAL (decent), DRAW_STRONG/WEAK, BLUFF_CATCHER, AIR
+• ARCHETYPE: Specific hand (e.g., "Top Pair Good Kicker")
+• FEATURES: MULTI_DRAW, BLOCKER_RELEVANT, VULNERABLE, REDRAW_POTENTIAL
+
+[BOARD:*] - Board texture
+• WETNESS: WET (many draws), SEMI_WET, DRY (few draws)
+• TEXTURE: PAIRED, MONOTONE, CONNECTED
+• NEXT_STREET: SWINGY vs STATIC, BEST/WORST cards
+
+[RANGE:*] - Who's ahead
+• ADVANTAGE: HERO_STRONG/SLIGHT, VILLAIN_STRONG/SLIGHT, NEUTRAL
+• HERO/VILLAIN: POLARIZED (nuts+air), CONDENSED (medium), CAPPED (no nuts)
+
+[BLOCKER:*] - Card removal
+• What you block (VALUE/NUTS/BLUFFS/DRAWS) + examples like "AK,AQ"
+• Context: GOOD_BLUFF, GOOD_BLUFFCATCH, TURN_TO_BLUFF
+
+[SPR:*] - Stack depth (SHALLOW <2, MEDIUM 2-6, DEEP 6-13, VERY_DEEP >13)
+[POTODDS:*] - Getting X:1, need Y% equity
+[MIX:*] - Solver mixes (FREQ ratios, REASON why)
+[POSITION:*] - IP (in position) or OOP (out of position)
+[STRAT:*] - Strategic goals (EXTRACT_VALUE, DENY_EQUITY, LEVERAGE_NUTS)
+[REASONING:*] - Deeper strategic interplay (e.g., [REASONING:RANGE:STRATEGY:OVERBET_POLARIZED_RANGE])
+
+LANGUAGE PATTERNS TO USE:
+- "We 3-bet pre, so..." (inclusive language)
+- "Now they hit you with..." (direct, present tense)
+- "Solver likes/hates..." (personify the solver)
+- "That Ace is a mixed blessing..." (colloquial expressions)
+- "You're getting 2.3:1" (natural ratios)
+- "Their range is pretty chunky" (poker slang)
+- "It's not a punt, but..." (acknowledge close spots)
+- "Good discipline folding here" (reinforce good decisions)
+
+NATURAL FLOW:
+Each street comment should flow as ONE smooth thought that weaves in exactly ONE UI tag naturally. Don't list factors - connect them causally:
+- "We 3-bet pre, so on J-9-K two-tone we actually own more sets and K-x than the button..."
+- "That Ace helps their flatting range, but your J-T picks up the straight-flush draw, so..."
+- "Pot-size from Villain is polar - mostly big value, rare bluffs..."
+
+PLAN:
+1.  Review all solverTags across all snapshots.
+2.  Identify the most critical, overarching strategic theme or lesson in the hand.
+3.  Select the 3-5 most important tags that best illustrate this theme.
+4.  Outline a clear narrative arc for how a coach should explain the hand.
+5.  Specify a coaching tone.
+
+Using the plan you created, output hand narration in first person voice, like talking to a fellow poker player. Use poker-savvy languague but remain down to earth. Follow the plan concretely 
+
+OUTPUT FORMAT:
+{
+  "plan": "{
+    "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
+    "keyFocusTags": [{ street: "...", tags: ["Key 5-6 TAGs to focus on, MUST use supplied tags, do not invent something"] }],
+    "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
+    "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
+   }",
+  "headline": "3-5 word punchy title",
+  "tlDr": "One sentence capturing the key lesson in everyday language",
+  "handScore": 0-100,
+  "snapshots": [
+    {
+      "id": 0,
+      "streetComment": "2-3 sentecnes of flowing thought that sounds like natural poker table talk, with exactly one <ui_tag> woven seamlessly into the explanation",
+      "mistake": null | { "text": "What went wrong explained simply", "evLoss": X.X, "severity": 0-100 }
+    }
+  ]
+}`;
+
+
 
         // UI tag context mapping for validation
         this.tagContextMap = {
@@ -73,26 +252,101 @@ OUTPUT FORMAT:
      * Build complete prompt for LLM analysis
      * @param {Object} handMeta - Hand metadata
      * @param {Array} trimmedSnapshots - Array of snapshots with trimmed solver data
+     * @param {Object} generationSpec - Optional spec from the analysis phase
      * @returns {Object} Complete prompt with system and user messages
      */
-    buildPrompt(handMeta, trimmedSnapshots) {
-        const userMessage = this.buildUserMessage(handMeta, trimmedSnapshots);
+    buildPrompt(handMeta, trimmedSnapshots, generationSpec = null) {
+        // Check if we have tags in the snapshots
+        const hasTags = trimmedSnapshots.some(s => s.solverTags && s.solverTags.length > 0);
+        const shouldUseTags = this.useTagSystem && hasTags;
+        
+        const userMessage = shouldUseTags ? 
+            this.buildTagBasedUserMessage(handMeta, trimmedSnapshots, generationSpec) :
+            this.buildUserMessage(handMeta, trimmedSnapshots);
         
         return {
-            system: this.systemPrompt,
+            system: shouldUseTags ? this.tagSystemPrompt : this.systemPrompt,
             user: JSON.stringify(userMessage) // Remove whitespace to reduce tokens
         };
     }
 
     /**
-     * Build user message containing hand data and snapshots
+     * Build the prompt for the initial analysis phase.
+     * @param {Object} handMeta - Hand metadata
+     * @param {Array} trimmedSnapshots - Array of snapshots with tags
+     * @returns {Object} Prompt for the analysis LLM call
+     */
+    buildAnalysisPrompt(handMeta, trimmedSnapshots) {
+        const userMessage = {
+            handMeta,
+            solverSnapshots: trimmedSnapshots.map((snapshot, index) => ({
+                index,
+                street: snapshot.snapshotInput.street,
+                solverTags: snapshot.solverTags || []
+            }))
+        };
+
+        return {
+            system: this.analysisPrompt,
+            user: JSON.stringify(userMessage)
+        };
+    }
+
+    /**
+     * Build tag-based user message (minimal solver data, using tags)
+     * @param {Object} handMeta - Hand metadata
+     * @param {Array} trimmedSnapshots - Array of snapshots with tags
+     * @param {Object} generationSpec - Optional spec from the analysis phase
+     * @returns {Object} User message object with tags
+     */
+    buildTagBasedUserMessage(handMeta, trimmedSnapshots, generationSpec = null) {
+        // Consolidate action history from all snapshots
+        const actionHistory = this.consolidateActionHistory(trimmedSnapshots);
+        
+        const message = {
+            handMeta,
+            actionHistory, // Single consolidated action history for the entire hand
+            solverSnapshots: trimmedSnapshots.map((snapshot, index) => {
+                const { snapshotInput, decisionPoint, solverTags } = snapshot;
+                const heroAction = _.pick(decisionPoint.heroAction.action, ['type', 'amount', 'amountBB']);
+
+                // Build minimal snapshot with tags instead of full solver block
+                return {
+                    index,
+                    street: snapshotInput.street,
+                    board: snapshotInput.board || [],
+                    potBB: snapshotInput.pot_bb,
+                    heroStackBB: snapshotInput.heroStackBB,
+                    heroAction: heroAction || null,
+                    solverTags: solverTags || [],
+                    // Include minimal solver data for mistake calculation
+                    evHero: snapshot.solver?.evHero,
+                    rangeAdvantage: snapshot.solver?.rangeAdvantage,
+                    recommendedAction: snapshot.solver?.optimalStrategy?.recommendedAction?.action
+                }
+            })
+        };
+
+        if (generationSpec) {
+            message.generationSpec = generationSpec;
+        }
+
+        return message;
+    }
+
+    /**
+     * Build user message containing hand data and snapshots (legacy method)
      * @param {Object} handMeta - Hand metadata
      * @param {Array} trimmedSnapshots - Array of snapshots with trimmed solver data
      * @returns {Object} User message object
      */
     buildUserMessage(handMeta, trimmedSnapshots) {
+        // Consolidate action history from all snapshots
+        const actionHistory = this.consolidateActionHistory(trimmedSnapshots);
+        
         return {
             handMeta,
+            actionHistory, // Single consolidated action history for the entire hand
             solverSnapshots: trimmedSnapshots.map((snapshot, index) => {
                 const { snapshotInput, decisionPoint } = snapshot;
                 const heroAction = _.pick(decisionPoint.heroAction.action, ['type', 'amount', 'amountBB']);
@@ -104,11 +358,111 @@ OUTPUT FORMAT:
                     potBB: snapshotInput.pot_bb,
                     heroStackBB: snapshotInput.heroStackBB,
                     heroAction: heroAction || null,
-                    streetActionsHistory: snapshotInput.streetActionsHistory,
                     solver: snapshot.solver
                 }
             })
         };
+    }
+
+    /**
+     * Consolidate action history from all snapshots into a single chronological sequence
+     * @param {Array} trimmedSnapshots - Array of snapshots with streetActionsHistory
+     * @returns {Array} Consolidated action history with decision markers and hero actions
+     */
+    consolidateActionHistory(trimmedSnapshots) {
+        if (!trimmedSnapshots.length) return [];
+        
+        const consolidatedActions = [];
+        const streets = ['PREFLOP', 'FLOP', 'TURN', 'RIVER'];
+
+        
+        // Simple approach: build action history incrementally from each snapshot
+        const addedActions = new Set();
+        const heroActionsAlreadyShownInDecisions = new Set();
+        
+        trimmedSnapshots.forEach(snapshot => {
+            const currentStreet = snapshot.snapshotInput.street;
+            
+            // Process all streets up to and including the current street
+            for (const street of streets) {
+                const streetHistory = snapshot.snapshotInput.streetActionsHistory[street];
+                if (!streetHistory || streetHistory.length === 0) continue;
+                
+                // For the decision street, we need to handle the decision marker
+                if (street === currentStreet) {
+                    streetHistory.forEach((action, index) => {
+                        if (action === '← decision') {
+                            // Add the decision marker with hero's action
+                            const heroAction = snapshot.decisionPoint?.heroAction?.action;
+                            if (heroAction) {
+                                const heroActionText = this.formatHeroAction(heroAction);
+                                const decisionText = `← Decision (Hero ${heroActionText})`;
+                                consolidatedActions.push(decisionText);
+                                addedActions.add(decisionText);
+                                
+                                // Track this hero action to skip duplicates
+                                // Need to match both "Hero check" and "Hero checks" formats
+                                const baseAction = heroAction.type; // This is 'check', 'call', 'fold', etc.
+                                heroActionsAlreadyShownInDecisions.add(`Hero ${baseAction}`);
+                                heroActionsAlreadyShownInDecisions.add(`Hero ${heroActionText}`); // Also add the formatted version
+                            }
+                        } else {
+                            // Skip hero actions that are already shown in decision markers
+                            if (heroActionsAlreadyShownInDecisions.has(action)) {
+                                return; // Skip this iteration in forEach
+                            }
+                            
+                            // Add regular action if not already added
+                            const actionKey = `${street}:${index}:${action}`;
+                            if (!addedActions.has(actionKey)) {
+                                consolidatedActions.push(action);
+                                addedActions.add(actionKey);
+                            }
+                        }
+                    });
+                } else {
+                    // For non-decision streets, just add actions we haven't seen
+                    streetHistory.forEach((action, index) => {
+                        if (action !== '← decision' && !heroActionsAlreadyShownInDecisions.has(action)) {
+                            const actionKey = `${street}:${index}:${action}`;
+                            if (!addedActions.has(actionKey)) {
+                                consolidatedActions.push(action);
+                                addedActions.add(actionKey);
+                            }
+                        }
+                    });
+                }
+                
+                // Stop processing streets after the current decision street
+                if (street === currentStreet) break;
+            }
+        });
+        
+        return consolidatedActions;
+    }
+    
+    /**
+     * Format hero action for display in action history
+     * @param {Object} heroAction - Hero action object
+     * @returns {string} Formatted action string
+     */
+    formatHeroAction(heroAction) {
+        const { type, amountBB } = heroAction;
+        
+        switch (type) {
+            case 'check':
+                return 'checks';
+            case 'fold':
+                return 'folds';
+            case 'call':
+                return 'calls';
+            case 'bet':
+                return amountBB ? `bets ${amountBB}BB` : 'bets';
+            case 'raise':
+                return amountBB ? `raises to ${amountBB}BB` : 'raises';
+            default:
+                return type || 'acts';
+        }
     }
 
     /**
@@ -329,6 +683,47 @@ OUTPUT FORMAT:
         const expectedResponseTokens = 300; // Estimated response size
 
         return systemTokens + userTokens + expectedResponseTokens;
+    }
+
+    /**
+     * Compare token usage between tag-based and legacy approaches
+     * @param {Object} handMeta - Hand metadata
+     * @param {Array} trimmedSnapshots - Array of snapshots
+     * @returns {Object} Token comparison data
+     */
+    compareTokenUsage(handMeta, trimmedSnapshots) {
+        // Build both versions
+        const legacyPrompt = {
+            system: this.systemPrompt,
+            user: JSON.stringify(this.buildUserMessage(handMeta, trimmedSnapshots))
+        };
+        
+        const tagPrompt = {
+            system: this.tagSystemPrompt,
+            user: JSON.stringify(this.buildTagBasedUserMessage(handMeta, trimmedSnapshots))
+        };
+        
+        const legacyTokens = this.estimateTokens(legacyPrompt);
+        const tagTokens = this.estimateTokens(tagPrompt);
+        const reduction = ((legacyTokens - tagTokens) / legacyTokens * 100).toFixed(1);
+        
+        return {
+            legacy: {
+                tokens: legacyTokens,
+                userMessageLength: legacyPrompt.user.length,
+                systemPromptLength: legacyPrompt.system.length
+            },
+            tagBased: {
+                tokens: tagTokens,
+                userMessageLength: tagPrompt.user.length,
+                systemPromptLength: tagPrompt.system.length,
+                tagCount: trimmedSnapshots.reduce((sum, s) => sum + (s.solverTags?.length || 0), 0)
+            },
+            reduction: {
+                percentage: reduction,
+                tokensSaved: legacyTokens - tagTokens
+            }
+        };
     }
 
     /**

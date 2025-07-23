@@ -25,7 +25,7 @@ const grok = new OpenAI({
 });
 
 const mistral = new Mistral({
-  apiKey: '5zx9G4Lht8Zr7AjBlnAgorbg97DKJ9Uj',
+  apiKey: process.env.MISTRAL_API_KEY,
 });
 
 /**

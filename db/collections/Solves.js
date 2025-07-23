@@ -9,6 +9,9 @@ const { buildSolverBlockFromNodeData } = require('../../utils/solverNodeService'
 const { generateSnapshots } = require('../../utils/solver-snapshot-generator');
 const { findSimilarNode } = require('../../utils/vectorSearch');
 
+// Import bet sizing parser
+const { parseActionArray } = require('../../utils/betSizingParser');
+
 // Import vector testing pipeline utilities for enhanced local search
 const { ACTION_ENCODING, ACTION_SYMBOLS } = require('../../utils/constants');
 
@@ -122,56 +125,91 @@ class Solves extends SuperCollection {
    * @returns {Promise<Array>} Array of enriched snapshots
    */
   async prepareSnapshots(handId, options = {}) {
+    const totalStartTime = Date.now();
+    console.log(`🚀 [TIMING] Starting prepareSnapshots for hand ${handId}`);
+    
     try {
       // 1. Get hand data
+      const handStartTime = Date.now();
       const hand = await Hands.findById(+handId);
+      console.log(`📖 [TIMING] Hand lookup: ${Date.now() - handStartTime}ms`);
+      
       if (!hand) {
         throw new Error(`Hand not found: ${handId}`);
       }
       
       // 2. Generate snapshots using existing generator
+      const snapshotGenStartTime = Date.now();
       const snapshots = generateSnapshots(hand);
+      console.log(`📸 [TIMING] Snapshot generation (${snapshots.length} snapshots): ${Date.now() - snapshotGenStartTime}ms`);
       
       // 3. Separate by street
       const flopSnapshots = snapshots.filter(s => s.snapshotInput.street === 'FLOP');
       const turnSnapshots = snapshots.filter(s => s.snapshotInput.street === 'TURN');
       const riverSnapshots = snapshots.filter(s => s.snapshotInput.street === 'RIVER');
+      console.log(`📊 [TIMING] Snapshot breakdown - FLOP: ${flopSnapshots.length}, TURN: ${turnSnapshots.length}, RIVER: ${riverSnapshots.length}`);
       
-      // 4. Vector search (exclude RIVER)
+      // 4. Vector search (exclude RIVER) - batch for better performance
+      const vectorSearchStartTime = Date.now();
       const vectorTargets = [...flopSnapshots, ...turnSnapshots];
-      const vectorResults = await Promise.all(
-        vectorTargets.map(snapshot => findSimilarNode(snapshot.snapshotInput))
-      );
+      
+      // Try batched search first, fall back to individual if not available
+      let vectorResults;
+      try {
+        const { batchFindSimilarNodes } = require('../../utils/vectorSearch');
+        vectorResults = await batchFindSimilarNodes(
+          vectorTargets.map(s => s.snapshotInput),
+          { batchSize: 5 } // Process 5 at a time to avoid overwhelming Qdrant
+        );
+        console.log(`🔍 [TIMING] Batched vector search for ${vectorTargets.length} snapshots: ${Date.now() - vectorSearchStartTime}ms`);
+      } catch (error) {
+        console.warn('Batched search failed, falling back to individual queries:', error.message);
+        vectorResults = await Promise.all(
+          vectorTargets.map(snapshot => findSimilarNode(snapshot.snapshotInput))
+        );
+        console.log(`🔍 [TIMING] Individual vector search for ${vectorTargets.length} snapshots: ${Date.now() - vectorSearchStartTime}ms`);
+      }
       
       // 5. Enrich each snapshot with zst caching
+      const enrichmentStartTime = Date.now();
       const enrichedSnapshots = [];
       const zstCache = new Map(); // Cache for nodeDataArray by vectorResult metadata
       
-      // Process FLOP + TURN and collect TURN vector results
+      // Process FLOP + TURN in parallel and collect TURN vector results
       const turnVectorResults = [];
-      for (let i = 0; i < vectorTargets.length; i++) {
-        const snapshot = vectorTargets[i];
+      const enrichmentPromises = vectorTargets.map(async (snapshot, i) => {
         const vectorResult = vectorResults[i];
         const enriched = await this.enrichSnapshot(snapshot, vectorResult, zstCache);
-        enrichedSnapshots.push(enriched);
         
         // Collect TURN vector results for RIVER reuse
         if (snapshot.snapshotInput.street === 'TURN') {
           turnVectorResults.push({ snapshot, vectorResult });
         }
-      }
+        
+        return enriched;
+      });
       
-      // Process RIVER (reuse TURN vector results and cached zst data)
+      const parallelEnrichedSnapshots = await Promise.all(enrichmentPromises);
+      enrichedSnapshots.push(...parallelEnrichedSnapshots);
+      console.log(`⚡ [TIMING] Parallel enrichment of ${vectorTargets.length} snapshots: ${Date.now() - enrichmentStartTime}ms`);
+      
+      // 6. Process RIVER (reuse TURN vector results and cached zst data)
+      const riverStartTime = Date.now();
       for (const riverSnapshot of riverSnapshots) {
         const turnResult = turnVectorResults[turnVectorResults.length - 1]
         const enriched = await this.enrichRiverSnapshot(riverSnapshot, turnResult, zstCache);
         enrichedSnapshots.push(enriched);
       }
+      console.log(`🌊 [TIMING] RIVER processing (${riverSnapshots.length} snapshots): ${Date.now() - riverStartTime}ms`);
+      
+      const totalTime = Date.now() - totalStartTime;
+      console.log(`✅ [TIMING] Total prepareSnapshots completed: ${totalTime}ms`);
       
       return enrichedSnapshots;
       
     } catch (error) {
-      console.error('Error preparing snapshots:', error);
+      const totalTime = Date.now() - totalStartTime;
+      console.error(`❌ [TIMING] Error preparing snapshots after ${totalTime}ms:`, error);
       throw new Error(`Failed to prepare snapshots for hand ${handId}: ${error.message}`);
     }
   }
@@ -184,46 +222,58 @@ class Solves extends SuperCollection {
    * @returns {Promise<Object>} Enriched snapshot
    */
   async enrichSnapshot(snapshot, vectorResult, zstCache = new Map()) {
+    const enrichStartTime = Date.now();
+    const street = snapshot.snapshotInput.street;
+    console.log(`🔍 [TIMING] Starting ${street} enrichment for snapshot`);
+    
     if (!vectorResult?.nodeMetadata) {
+      console.log(`⚠️  [TIMING] ${street} enrichment skipped - no vector result (${Date.now() - enrichStartTime}ms)`);
       return { ...snapshot, solver: null };
     }
     
-    const street = snapshot.snapshotInput.street;
     let solverBlock;
     
     try {
       if (street === 'FLOP') {
         // Get from MongoDB
+        const dbStartTime = Date.now();
         const flopNode = await this.findFlopNodeById(vectorResult.nodeMetadata.original_id);
+        console.log(`📊 [TIMING] FLOP MongoDB lookup: ${Date.now() - dbStartTime}ms`);
+        
         if (!flopNode) {
           console.warn(`FLOP node not found: ${vectorResult.nodeMetadata._id || vectorResult.nodeMetadata.original_id}`);
           return { ...snapshot, solver: null };
         }
-        solverBlock = await this.buildSolverBlockFromFlopNode(flopNode, snapshot.snapshotInput.heroCards, vectorResult.similarityScore);
+        
+        const buildStartTime = Date.now();
+        solverBlock = await this.buildSolverBlockFromFlopNode(flopNode, snapshot.snapshotInput.heroCards, vectorResult.similarityScore, snapshot.snapshotInput.board);
+        console.log(`🔨 [TIMING] FLOP solver block build: ${Date.now() - buildStartTime}ms`);
+        
       } else {
         // TURN: unpack zst and cache for RIVER reuse
         const cacheKey = this.getCacheKey(vectorResult.nodeMetadata);
         let nodeDataArray = zstCache.get(cacheKey);
         
         if (!nodeDataArray) {
+          const s3StartTime = Date.now();
           nodeDataArray = await this.solver.fetchAndDecodeNode(vectorResult.nodeMetadata);
+          console.log(`📥 [TIMING] TURN S3 fetch + decode: ${Date.now() - s3StartTime}ms`);
+          
           zstCache.set(cacheKey, nodeDataArray);
           console.log(`Cached zst data for key: ${cacheKey}`);
         } else {
-          console.log(`Reusing cached zst data for key: ${cacheKey}`);
+          console.log(`✅ [TIMING] Using cached zst data for key: ${cacheKey} (0ms)`);
         }
         
         // Pass the node_identifier from vector result for direct lookup
+        const nodeSearchStartTime = Date.now();
         const nodeId = vectorResult.nodeMetadata?.node_identifier || vectorResult.nodeMetadata?._id;
         console.log(`Using nodeId for TURN lookup: ${nodeId}`);
-        console.log(`Sample nodes in array:`, nodeDataArray.slice(0, 3).map(n => ({
-          node_id: n.node_id,
-          node_identifier: n.node_identifier,
-          board: n.board
-        })));
         
         // Search for the exact nodeId in the entire array
         const targetNodeFound = nodeDataArray.find(n => n.node_id === nodeId);
+        console.log(`🔍 [TIMING] TURN node search in array (${nodeDataArray.length} nodes): ${Date.now() - nodeSearchStartTime}ms`);
+        
         if (targetNodeFound) {
           console.log(`✅ Found target node "${nodeId}":`, {
             node_id: targetNodeFound.node_id,
@@ -234,6 +284,8 @@ class Solves extends SuperCollection {
           console.log(`❌ Node "${nodeId}" not found in array of ${nodeDataArray.length} nodes`);
           console.log('All node_ids:', nodeDataArray.map(n => n.node_id).slice(0, 20));
         }
+        
+        const buildStartTime = Date.now();
         solverBlock = await buildSolverBlockFromNodeData(
           nodeDataArray, 
           snapshot.snapshotInput, 
@@ -241,8 +293,10 @@ class Solves extends SuperCollection {
           snapshot.snapshotInput.heroCards,
           nodeId
         );
+        console.log(`🔨 [TIMING] TURN solver block build: ${Date.now() - buildStartTime}ms`);
 
         // Handle TURN fallback strategy
+        const fallbackStartTime = Date.now();
         if (solverBlock.optimalStrategy?.actionFrequencies?.length < 2) {
           // Use fallback metadata
           if (vectorResult.nodeMetadata.optimal_strategy) {
@@ -255,11 +309,43 @@ class Solves extends SuperCollection {
           // Remove unreliable data for TURN nodes
           delete vectorResult.rangeAdvantage;
         }
+        console.log(`⚙️  [TIMING] TURN fallback processing: ${Date.now() - fallbackStartTime}ms`);
       }
       
-      return { ...snapshot, solver: solverBlock };
+      // Generate tags if solver block exists
+      let solverTags = null;
+      if (solverBlock) {
+        const tagStartTime = Date.now();
+        try {
+          const TagGenerationService = require('../../utils/TagGenerationService');
+          const tagService = new TagGenerationService({
+            enableReasoning: true,
+            tagPriority: 'balanced'
+          });
+          
+          solverTags = tagService.generateTags(solverBlock, {
+            street: snapshot.snapshotInput.street,
+            potBB: snapshot.snapshotInput.pot_bb || snapshot.snapshotInput.pot,
+            effectiveStackBB: snapshot.snapshotInput.stack_bb || snapshot.snapshotInput.heroStackBB,
+            heroAction: snapshot.heroAction,
+            streetHistory: snapshot.streetActionsHistory,
+            potOdds: snapshot.snapshotInput.potOdds,
+          });
+          
+          console.log(`🏷️  [TIMING] Tag generation (${solverTags.length} tags): ${Date.now() - tagStartTime}ms`);
+        } catch (tagError) {
+          console.warn('Failed to generate tags:', tagError.message);
+          solverTags = null;
+        }
+      }
+      
+      const totalTime = Date.now() - enrichStartTime;
+      console.log(`✅ [TIMING] Total ${street} enrichment completed: ${totalTime}ms`);
+      
+      return { ...snapshot, solver: solverBlock, solverTags };
     } catch (error) {
-      console.warn(`Failed to enrich ${street} snapshot:`, error.message);
+      const totalTime = Date.now() - enrichStartTime;
+      console.warn(`❌ [TIMING] Failed to enrich ${street} snapshot after ${totalTime}ms:`, error.message);
       return { ...snapshot, solver: null };
     }
   }
@@ -311,7 +397,31 @@ class Solves extends SuperCollection {
       
       // Build solver block
       const solverBlock = await buildSolverBlockFromNodeData([riverNode], riverSnapshot.snapshotInput, vectorResult.similarityScore);
-      return { ...riverSnapshot, solver: solverBlock };
+      
+      // Generate tags if solver block exists
+      let solverTags = null;
+      if (solverBlock) {
+        try {
+          const TagGenerationService = require('../../utils/TagGenerationService');
+          const tagService = new TagGenerationService({
+            enableReasoning: true,
+            tagPriority: 'balanced'
+          });
+          
+          solverTags = tagService.generateTags(solverBlock, {
+            street: riverSnapshot.snapshotInput.street,
+            potBB: riverSnapshot.snapshotInput.pot_bb || riverSnapshot.snapshotInput.pot,
+            effectiveStackBB: riverSnapshot.snapshotInput.stack_bb || riverSnapshot.snapshotInput.heroStackBB,
+            heroAction: riverSnapshot.heroAction,
+            streetHistory: riverSnapshot.streetActionsHistory,
+            potOdds: riverSnapshot.snapshotInput.potOdds,
+          });
+        } catch (tagError) {
+          console.warn('Failed to generate tags for RIVER:', tagError.message);
+        }
+      }
+      
+      return { ...riverSnapshot, solver: solverBlock, solverTags };
       
     } catch (error) {
       console.warn('Failed to enrich RIVER snapshot:', error.message);
@@ -458,11 +568,11 @@ class Solves extends SuperCollection {
    * @param {number} similarityScore - Similarity score (default: 1.0)
    * @returns {Promise<Object>} Complete SolverBlock object
    */
-  async buildSolverBlockFromFlopNode(flopNode, heroHand = null, similarityScore = 1.0) {
+  async buildSolverBlockFromFlopNode(flopNode, heroHand = null, similarityScore = 1.0, actualBoard = []) {
     if (!flopNode) return null;
     
     try {
-      const board = flopNode.board || [];
+      const board = actualBoard || [];
       const oopRange = flopNode.rangeStats?.oop || 'AA:1.0';
       const ipRange = flopNode.rangeStats?.ip || 'AA:1.0';
       const nextToAct = flopNode.nextToAct || 'oop';
@@ -509,7 +619,16 @@ class Solves extends SuperCollection {
       // Optimal Strategy from FLOP node data
       const actions = nextToAct === 'oop' ? flopNode.actionsOOP : flopNode.actionsIP;
       if (actions && actions.length > 0) {
-        const recommendedAction = actions.reduce((best, current) => 
+        // Parse actions to include bet sizing information
+        // For flop nodes, solver pot = actual pot (both in BB)
+        const solverPotBB = flopNode.pot;
+        const actualPotBB = flopNode.pot; // Same for flop nodes
+        const bbSize = 2; // Default BB size in chips
+        
+        // Parse all actions to include sizing
+        const parsedActions = parseActionArray(actions, solverPotBB, actualPotBB, bbSize);
+        
+        const recommendedAction = parsedActions.reduce((best, current) => 
           current.frequency > best.frequency ? current : best
         );
         
@@ -517,17 +636,21 @@ class Solves extends SuperCollection {
           recommendedAction: {
             action: recommendedAction.action,
             ev: recommendedAction.ev || 0,
-            frequency: recommendedAction.frequency
+            frequency: recommendedAction.frequency,
+            actionType: recommendedAction.actionType,
+            sizing: recommendedAction.sizing
           },
-          actionFrequencies: actions.map(action => ({
+          actionFrequencies: parsedActions.map(action => ({
             action: action.action,
             frequency: action.frequency,
-            ev: action.ev || 0
+            ev: action.ev || 0,
+            actionType: action.actionType,
+            sizing: action.sizing
           }))
         };
       } else {
         solverBlock.optimalStrategy = {
-          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0 },
+          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0, actionType: 'check', sizing: null },
           actionFrequencies: []
         };
       }
@@ -557,7 +680,8 @@ class Solves extends SuperCollection {
             heroHand,
             villainRange,
             board,
-            nextToAct === 'oop' ? oopRange : ipRange
+            nextToAct === 'oop' ? oopRange : ipRange,
+            flopNode.comboData ? JSON.stringify(flopNode.comboData) : null
           );
           
           solverBlock.heroRange = rangeAnalysis.heroRange;
@@ -571,6 +695,39 @@ class Solves extends SuperCollection {
           };
           solverBlock.handFeatures = {
             madeTier: 'Unknown', drawFlags: [], equityVsRange: 50
+          };
+        }
+      }
+
+      // Add combo-specific strategy (NEW: extract strategy for hero's hand category)
+      if (heroHand && flopNode.comboData) {
+        try {
+          // Get range string for the acting player
+          const actingRange = nextToAct === 'oop' ? oopRange : ipRange;
+          
+          // Extract combo strategy using the new modular function with two-board approach
+          const comboStrategy = this.solver.extractComboStrategy(
+            heroHand,
+            board,                    // actual_board where hero's hand is being analyzed
+            flopNode.board || board,  // solver_board where strategies were calculated
+            actingRange,
+            flopNode.comboData
+          );
+          
+          solverBlock.comboStrategy = comboStrategy;
+          
+        } catch (error) {
+          console.warn('Combo strategy extraction failed:', error.message);
+          solverBlock.comboStrategy = {
+            heroHand,
+            category: "Unknown",
+            madeTier: "Unknown",
+            drawFlags: [],
+            topActions: [
+              { action: "Check", frequency: 100.0, ev: 0.0 }
+            ],
+            recommendedAction: "Check",
+            confidence: "low"
           };
         }
       }

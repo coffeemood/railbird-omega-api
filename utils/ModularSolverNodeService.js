@@ -15,6 +15,7 @@ const {
     calculateBlockerImpactApi,
     analyzeRangeComplete,
     generateRangeStats,
+    extractComboStrategyApi,
     
     // Board Analysis
     analyzeBoardTextureApi,
@@ -298,13 +299,48 @@ class ModularSolverNodeService {
      * @param {string} heroRange - Optional hero range string
      * @returns {Object} Complete range analysis
      */
-    analyzeRangeComplete(heroHand, villainRange, board, heroRange = null) {
+    analyzeRangeComplete(heroHand, villainRange, board, heroRange = null, comboDataJson = null) {
         return this._measurePerformance('analyzeRangeComplete', () => {
             try {
-                const result = analyzeRangeComplete(heroHand, villainRange, board, heroRange);
+                const result = analyzeRangeComplete(heroHand, villainRange, board, heroRange, comboDataJson);
                 return JSON.parse(result);
             } catch (error) {
                 throw new Error(`Failed to perform complete range analysis: ${error.message}`);
+            }
+        });
+    }
+
+    /**
+     * Extract combo-specific strategy for hero's hand with two-board approach
+     * @param {string} heroHand - Hero's hole cards (e.g., "AhKh")
+     * @param {string[]} actualBoard - Board where hero's hand is being analyzed
+     * @param {string[]} solverBoard - Board where solver strategies were calculated
+     * @param {string} rangeString - Range string for categorization
+     * @param {Object} comboDataMap - Map of combo -> comboData strings
+     * @returns {Object} Combo strategy result with category-specific actions
+     */
+    extractComboStrategy(heroHand, actualBoard, solverBoard, rangeString, comboDataMap) {
+        return this._measurePerformance('extractComboStrategy', () => {
+            try {
+                // Convert comboDataMap to JSON string for NAPI function
+                const comboDataJson = JSON.stringify(comboDataMap);
+                
+                const result = extractComboStrategyApi(heroHand, actualBoard, solverBoard, rangeString, comboDataJson);
+                return JSON.parse(result);
+            } catch (error) {
+                // Return fallback strategy on error
+                console.warn(`Failed to extract combo strategy: ${error.message}`);
+                return {
+                    heroHand,
+                    category: "Unknown",
+                    madeTier: "Unknown",
+                    drawFlags: [],
+                    topActions: [
+                        { action: "Check", frequency: 100.0, ev: 0.0 }
+                    ],
+                    recommendedAction: "Check",
+                    confidence: "low"
+                };
             }
         });
     }
@@ -380,6 +416,24 @@ class ModularSolverNodeService {
                 return JSON.parse(result);
             } catch (error) {
                 throw new Error(`Failed to analyze hand features: ${error.message}`);
+            }
+        });
+    }
+
+    /**
+     * Get hand archetype for a specific hand and board
+     * @param {string} heroHand - Hero hand (e.g., "AhKh")
+     * @param {string[]} board - Board cards array
+     * @returns {Object} Hand archetype classification
+     */
+    getHandArchetype(heroHand, board) {
+        return this._measurePerformance('getHandArchetype', () => {
+            try {
+                const { getHandArchetypeApi } = require('./solver-node');
+                const result = getHandArchetypeApi(heroHand, board);
+                return JSON.parse(result);
+            } catch (error) {
+                throw new Error(`Failed to get hand archetype: ${error.message}`);
             }
         });
     }

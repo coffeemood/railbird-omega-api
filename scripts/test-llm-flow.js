@@ -59,6 +59,9 @@ class LLMFlowTester {
             // Phase 2: Solver Integration  
             await this.runPhase2();
             
+            // Phase 2.5: Tag Generation & Token Analysis (NEW)
+            await this.runPhase2_5();
+            
             // Phase 3: LLM Pipeline
             await this.runPhase3();
             
@@ -142,6 +145,98 @@ class LLMFlowTester {
     }
 
     /**
+     * Phase 2.5: Tag Generation & Token Analysis (NEW)
+     */
+    async runPhase2_5() {
+        this.display.phase('\n🏷️  PHASE 2.5: Tag Generation & Token Analysis');
+        
+        this.benchmark.start('tag_analysis');
+        
+        try {
+            // Analyze tag generation results
+            const tagStats = this.analyzeTagGeneration(this.results.enrichedSnapshots);
+            
+            this.display.metric('Total Tags Generated', tagStats.totalTags);
+            this.display.metric('Average Tags/Snapshot', tagStats.avgTagsPerSnapshot.toFixed(1));
+            this.display.metric('Tag Categories Used', tagStats.categoriesUsed.join(', '));
+            
+            // Display tag distribution
+            this.display.subsection('Tag Distribution:');
+            Object.entries(tagStats.categoryDistribution).forEach(([category, count]) => {
+                this.display.indent(`${category}: ${count} tags`);
+            });
+            
+            // Token comparison analysis
+            this.benchmark.start('token_comparison');
+            const LLMPromptBuilder = require('../utils/LLMPromptBuilder');
+            const promptBuilder = new LLMPromptBuilder({ useTagSystem: false });
+            
+            // Build handMeta using promptBuilder's method
+            const handMeta = promptBuilder.formatHandMeta(this.results.hand);
+            
+            // Compare token usage
+            const tokenComparison = promptBuilder.compareTokenUsage(handMeta, this.results.enrichedSnapshots);
+            
+            this.display.subsection('Token Usage Comparison:');
+            this.display.metric('Legacy Approach', `${tokenComparison.legacy.tokens} tokens`);
+            this.display.metric('Tag-Based Approach', `${tokenComparison.tagBased.tokens} tokens`);
+            this.display.metric('Token Reduction', `${tokenComparison.reduction.percentage}% (${tokenComparison.reduction.tokensSaved} tokens saved)`);
+            
+            // Store results for later reference
+            this.results.tagAnalysis = {
+                tagStats,
+                tokenComparison
+            };
+            
+            const tokenComparisonTime = this.benchmark.end('token_comparison');
+            const tagAnalysisTime = this.benchmark.end('tag_analysis');
+            
+            this.display.metric('Tag Analysis Time', `${tagAnalysisTime}ms`);
+            this.display.metric('Token Comparison Time', `${tokenComparisonTime}ms`);
+            
+            // Display sample tags for first snapshot
+            if (this.results.enrichedSnapshots[0]?.solverTags?.length > 0) {
+                this.display.subsection('Sample Tags (First Snapshot):');
+                this.results.enrichedSnapshots[0].solverTags.slice(0, 5).forEach(tag => {
+                    this.display.indent(tag);
+                });
+            }
+            
+        } catch (error) {
+            this.results.errors.push({ phase: 'Phase 2.5', error: error.message });
+            console.error('Tag analysis error:', error);
+            // Continue execution even if tag analysis fails
+        }
+    }
+
+    /**
+     * Analyze tag generation results
+     */
+    analyzeTagGeneration(enrichedSnapshots) {
+        let totalTags = 0;
+        const categoryDistribution = {};
+        const categoriesSet = new Set();
+        
+        enrichedSnapshots.forEach(snapshot => {
+            const tags = snapshot.solverTags || [];
+            totalTags += tags.length;
+            
+            tags.forEach(tag => {
+                const category = tag.split(':')[0].replace('[', '');
+                categoriesSet.add(category);
+                categoryDistribution[category] = (categoryDistribution[category] || 0) + 1;
+            });
+        });
+        
+        return {
+            totalTags,
+            avgTagsPerSnapshot: enrichedSnapshots.length > 0 ? totalTags / enrichedSnapshots.length : 0,
+            categoriesUsed: Array.from(categoriesSet),
+            categoryDistribution
+        };
+    }
+
+    /**
      * Phase 3: LLM Pipeline
      */
     async runPhase3() {
@@ -161,7 +256,7 @@ class LLMFlowTester {
             // Run LLM analysis
             this.results.llmAnalysis = await this.llmService.analyzeHand(
                 this.results.enrichedSnapshots,
-                this.results.hand
+                this.results.hand,
             );
             
             const llmTime = this.benchmark.end('llm_processing');
@@ -317,6 +412,14 @@ class LLMFlowTester {
         // Memory usage
         const memUsage = process.memoryUsage();
         this.display.bullet(`Peak Memory Usage: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
+        
+        // Tag generation summary
+        if (this.results.tagAnalysis) {
+            this.display.subsection('Tag Generation Summary:');
+            this.display.indent(`Total Tags: ${this.results.tagAnalysis.tagStats.totalTags}`);
+            this.display.indent(`Token Reduction: ${this.results.tagAnalysis.tokenComparison.reduction.percentage}%`);
+            this.display.indent(`Tokens Saved: ${this.results.tagAnalysis.tokenComparison.reduction.tokensSaved}`);
+        }
         
         // Provider usage
         const providerMetrics = this.llmService.getMetrics();
