@@ -388,11 +388,11 @@ class TagGenerationService {
         tags.push('[RANGE:VILLAIN:CONDENSED]');
       }
 
-      if (villainComp.capped) {
-        tags.push('[RANGE:VILLAIN:CAPPED]');
-      } else {
-        tags.push('[RANGE:VILLAIN:UNCAPPED]');
-      }
+      // if (villainComp.capped) {
+      //   tags.push('[RANGE:VILLAIN:CAPPED]');
+      // } else {
+      //   tags.push('[RANGE:VILLAIN:UNCAPPED]');
+      // }
     }
     
     return tags;
@@ -1340,7 +1340,7 @@ class TagGenerationService {
     return {
       polarized: composition.valuePct > 30 && composition.airPct > 30 && composition.marginalPct < 20,
       condensed: composition.marginalPct > 40,
-      capped: composition.valuePct < 10
+      capped: composition.valuePct < 5
     };
   }
 

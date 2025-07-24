@@ -29,12 +29,18 @@ class LLMFlowTester {
     constructor() {
         this.benchmark = new Benchmark();
         this.display = new Display();
+        // Check for environment variable or use default
+        const useTwoPhaseFlow = process.env.USE_TWO_PHASE_FLOW === 'true' || false;
+        
         this.llmService = new SolverLLMService({
             defaultModel: 'openai',
             enableMetrics: true,
             enableFallback: true,
-            temperature: 0.3
+            temperature: 0.3,
+            useTwoPhaseFlow: useTwoPhaseFlow
         });
+        
+        console.log(`🔧 LLM Mode: ${useTwoPhaseFlow ? 'Two-Phase Flow' : 'Single-Pass Flow'}`);
         
         this.results = {
             hand: null,

@@ -35,7 +35,10 @@ const EnrichedHandAnalysisSchema = z.object({
 
 const GenerationSpecSchema = z.object({
     mainStrategicConcept: z.string().describe("The core lesson of the hand."),
-    keyFocusTags: z.array(z.string()).describe("An array of the 3-5 most important tags to focus on."),
+    keyFocusTags: z.array(z.object({
+        street: z.string().describe("The street name (FLOP, TURN, RIVER)"),
+        tags: z.array(z.string()).describe("Array of tag strings to focus on")
+    })).describe("An array of the 3-5 most important tags to focus on."),
     narrativeArc: z.string().describe("A brief plan for the explanation."),
     tone: z.string().describe("A coaching tone.")
 });
@@ -48,6 +51,7 @@ class SolverLLMService {
             enableMetrics: config.enableMetrics || false,
             temperature: config.temperature || 0.3,
             maxTokens: config.maxTokens || 1500,
+            useTwoPhaseFlow: config.useTwoPhaseFlow !== undefined ? config.useTwoPhaseFlow : false, // Default to single-pass
             ...config
         };
 
@@ -57,7 +61,7 @@ class SolverLLMService {
 
         // Initialize utilities
         this.trimmer = new SolverBlockTrimmer();
-        this.promptBuilder = new LLMPromptBuilder();
+        this.promptBuilder = new LLMPromptBuilder({ useTagSystem: true });
 
         // Metrics tracking
         this.metrics = {
@@ -103,9 +107,9 @@ class SolverLLMService {
                             { role: 'system', content: prompt.system },
                             { role: 'user', content: prompt.user }
                         ],
-                        // temperature: options.temperature || 0.4,
-                        // max_tokens: options.maxTokens || 1000,
-                        // response_format: zodResponseFormat(responseSchema, responseFormatName)
+                        temperature: options.temperature || 0.4,
+                        max_tokens: options.maxTokens || 1000,
+                        response_format: zodResponseFormat(responseSchema, responseFormatName)
                     };
                     if (request.model === 'o3') request.reasoning_effort = 'low';
                     if (request.model !== 'o3') request.temperature = 0.2;
@@ -255,11 +259,17 @@ class SolverLLMService {
             // 2. Trim solver blocks for token efficiency
             const trimmedSnapshots = this.trimSnapshots(enrichedSnapshots);
 
-            // 3. Run the analysis phase to get the generation spec
-            // const generationSpec = await this._runAnalysisPhase(handMeta, trimmedSnapshots, options);
+            // 3. Conditionally run the analysis phase based on configuration
+            let generationSpec = null;
+            if (this.config.useTwoPhaseFlow) {
+                console.log('📊 Using two-phase flow with analysis step...');
+                generationSpec = await this._runAnalysisPhase(handMeta, trimmedSnapshots, options);
+            } else {
+                console.log('⚡ Using single-pass flow...');
+            }
 
-            // 4. Build the main generation prompt using the spec
-            const prompt = this.promptBuilder.buildPrompt(handMeta, trimmedSnapshots);
+            // 4. Build the main generation prompt (with or without spec)
+            const prompt = this.promptBuilder.buildPrompt(handMeta, trimmedSnapshots, generationSpec);
 
             // Debug: Write prompt to file
             const fs = require('fs');

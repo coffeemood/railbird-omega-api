@@ -27,14 +27,47 @@ TASK:
 4.  Outline a clear narrative arc for how a coach should explain the hand.
 5.  Specify a coaching tone.
 
+[ACTION:*] - What to do and why
+• CHECK - X, checking action (PROTECT_RANGE, TRAP, POT_CONTROL, WEAK, REALIZE_EQ)
+• BET/RAISE - B/R with sizing (VALUE, BLUFF, SEMI_BLUFF, TURN_INTO_BLUFF, PROTECTION)
+• CALL/FOLD - C/F decisions (POT_ODDS, BLUFF_CATCH)
+• BETSIZE/RAISESIZE - SMALL/MEDIUM/LARGE/OVERBET with % of pot
+
+[HAND:*] - Your hand strength
+• TYPE: VALUE_PREMIUM (nuts), VALUE_MARGINAL (decent), DRAW_STRONG/WEAK, BLUFF_CATCHER, AIR
+• ARCHETYPE: Specific hand (e.g., "Top Pair Good Kicker")
+• FEATURES: MULTI_DRAW, BLOCKER_RELEVANT, VULNERABLE, REDRAW_POTENTIAL
+
+[BOARD:*] - Board texture
+• WETNESS: WET (many draws), SEMI_WET, DRY (few draws)
+• TEXTURE: PAIRED, MONOTONE, CONNECTED
+• NEXT_STREET: SWINGY vs STATIC, BEST/WORST cards
+
+[RANGE:*] - Who's ahead
+• ADVANTAGE: HERO_STRONG/SLIGHT, VILLAIN_STRONG/SLIGHT, NEUTRAL
+• HERO/VILLAIN: POLARIZED (nuts+air), CONDENSED (medium), CAPPED (no nuts)
+
+[BLOCKER:*] - Card removal
+• What you block (VALUE/NUTS/BLUFFS/DRAWS) + examples like "AK,AQ"
+• Context: GOOD_BLUFF, GOOD_BLUFFCATCH, TURN_TO_BLUFF
+
+[SPR:*] - Stack depth (SHALLOW <2, MEDIUM 2-6, DEEP 6-13, VERY_DEEP >13)
+[POTODDS:*] - Getting X:1, need Y% equity
+[MIX:*] - Solver mixes (FREQ ratios, REASON why)
+[POSITION:*] - IP (in position) or OOP (out of position)
+[STRAT:*] - Strategic goals (EXTRACT_VALUE, DENY_EQUITY, LEVERAGE_NUTS)
+[REASONING:*] - Deeper strategic interplay (e.g., [REASONING:RANGE:STRATEGY:OVERBET_POLARIZED_RANGE])
+
 OUTPUT FORMAT:
 Return a single, clean JSON object with the following structure. Do not include any other text or explanations.
 {
-  "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
-  "keyFocusTags": ["An array of the 3-5 most important tags to focus on."],
-  "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
-  "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
+    "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
+    "keyFocusTags": [{ street: "...", tags: ["Key 5-6 TAGs to focus on, MUST use supplied tags, do not invent something"] }],
+    "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
+    "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
 }
+
+
 `;
         
         // System prompt template
@@ -145,38 +178,7 @@ KEY PHRASES THAT WORK:
 - "hit you with a barrel" instead of "bets"
 - "peel" instead of "call"
 - "brick" instead of "blank"
-- "SPR under 2" instead of "shallow stacks"
-
-[ACTION:*] - What to do and why
-• CHECK - X, checking action (PROTECT_RANGE, TRAP, POT_CONTROL, WEAK, REALIZE_EQ)
-• BET/RAISE - B/R with sizing (VALUE, BLUFF, SEMI_BLUFF, TURN_INTO_BLUFF, PROTECTION)
-• CALL/FOLD - C/F decisions (POT_ODDS, BLUFF_CATCH)
-• BETSIZE/RAISESIZE - SMALL/MEDIUM/LARGE/OVERBET with % of pot
-
-[HAND:*] - Your hand strength
-• TYPE: VALUE_PREMIUM (nuts), VALUE_MARGINAL (decent), DRAW_STRONG/WEAK, BLUFF_CATCHER, AIR
-• ARCHETYPE: Specific hand (e.g., "Top Pair Good Kicker")
-• FEATURES: MULTI_DRAW, BLOCKER_RELEVANT, VULNERABLE, REDRAW_POTENTIAL
-
-[BOARD:*] - Board texture
-• WETNESS: WET (many draws), SEMI_WET, DRY (few draws)
-• TEXTURE: PAIRED, MONOTONE, CONNECTED
-• NEXT_STREET: SWINGY vs STATIC, BEST/WORST cards
-
-[RANGE:*] - Who's ahead
-• ADVANTAGE: HERO_STRONG/SLIGHT, VILLAIN_STRONG/SLIGHT, NEUTRAL
-• HERO/VILLAIN: POLARIZED (nuts+air), CONDENSED (medium), CAPPED (no nuts)
-
-[BLOCKER:*] - Card removal
-• What you block (VALUE/NUTS/BLUFFS/DRAWS) + examples like "AK,AQ"
-• Context: GOOD_BLUFF, GOOD_BLUFFCATCH, TURN_TO_BLUFF
-
-[SPR:*] - Stack depth (SHALLOW <2, MEDIUM 2-6, DEEP 6-13, VERY_DEEP >13)
-[POTODDS:*] - Getting X:1, need Y% equity
-[MIX:*] - Solver mixes (FREQ ratios, REASON why)
-[POSITION:*] - IP (in position) or OOP (out of position)
-[STRAT:*] - Strategic goals (EXTRACT_VALUE, DENY_EQUITY, LEVERAGE_NUTS)
-[REASONING:*] - Deeper strategic interplay (e.g., [REASONING:RANGE:STRATEGY:OVERBET_POLARIZED_RANGE])
+- "shallow stacks" instead of "SPR Under 2"
 
 LANGUAGE PATTERNS TO USE:
 - "We 3-bet pre, so..." (inclusive language)
@@ -194,23 +196,14 @@ Each street comment should flow as ONE smooth thought that weaves in exactly ONE
 - "That Ace helps their flatting range, but your J-T picks up the straight-flush draw, so..."
 - "Pot-size from Villain is polar - mostly big value, rare bluffs..."
 
-PLAN:
-1.  Review all solverTags across all snapshots.
-2.  Identify the most critical, overarching strategic theme or lesson in the hand.
-3.  Select the 3-5 most important tags that best illustrate this theme.
-4.  Outline a clear narrative arc for how a coach should explain the hand.
-5.  Specify a coaching tone.
+Using the plan supplied in generationSpec, output hand narration in first person voice, like talking to a fellow poker player. Use poker-savvy languague but remain down to earth. Follow the plan concretely. 
 
-Using the plan you created, output hand narration in first person voice, like talking to a fellow poker player. Use poker-savvy languague but remain down to earth. Follow the plan concretely 
+UI TAGS
+- UI Tags can be appended to the end of each street comment to render UI compoennts
+- Allowed ui tags: <range hero> <range villain> <mix> <blockers> <ev_duel> <board_texture> <pot_odds>.
 
 OUTPUT FORMAT:
 {
-  "plan": "{
-    "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
-    "keyFocusTags": [{ street: "...", tags: ["Key 5-6 TAGs to focus on, MUST use supplied tags, do not invent something"] }],
-    "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
-    "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
-   }",
   "headline": "3-5 word punchy title",
   "tlDr": "One sentence capturing the key lesson in everyday language",
   "handScore": 0-100,

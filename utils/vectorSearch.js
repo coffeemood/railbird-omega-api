@@ -284,7 +284,7 @@ async function findSimilarNode(snapshotInput, options = {}) {
 
     const bestMatch = searchResults[0];
 
-    console.log({ bestMatch })
+    console.log(JSON.stringify(bestMatch, null, 2))
     
     // Reconstruct the LeanNodeMeta structure from Qdrant payload
     const nodeMetadata = {
