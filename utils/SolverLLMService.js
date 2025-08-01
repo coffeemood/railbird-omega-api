@@ -7,7 +7,6 @@
 
 require('dotenv').config()
 const OpenAI = require('openai');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { z } = require('zod');
 const { zodResponseFormat } = require('openai/helpers/zod');
 const SolverBlockTrimmer = require('./SolverBlockTrimmer');
@@ -22,7 +21,7 @@ const MistakeSchema = z.object({
 
 const SnapshotAnalysisSchema = z.object({
     id: z.number().describe("Snapshot index starting from 0"),
-    streetComment: z.string().max(250).describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
+    streetComment: z.string().describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
     mistake: MistakeSchema.nullable().describe("Mistake details if EV loss > 0.5BB, null otherwise")
 });
 
@@ -38,7 +37,8 @@ const GenerationSpecSchema = z.object({
     keyFocusTags: z.array(z.object({
         street: z.string().describe("The street name (FLOP, TURN, RIVER)"),
         tags: z.array(z.string()).describe("Array of tag strings to focus on")
-    })).describe("An array of the 3-5 most important tags to focus on."),
+    })).describe("An array of the 3-5 most important tags to focus on.").optional(),
+    analysis: z.array(z.any()).describe("Alternative analysis structure from non-OpenAI providers").optional(),
     narrativeArc: z.string().describe("A brief plan for the explanation."),
     tone: z.string().describe("A coaching tone.")
 });
@@ -46,7 +46,7 @@ const GenerationSpecSchema = z.object({
 class SolverLLMService {
     constructor(config = {}) {
         this.config = {
-            defaultModel: config.defaultModel || 'openai',
+            defaultProvider: config.defaultModel || 'fireworks', // defaultModel is actually the provider name
             enableFallback: config.enableFallback !== false,
             enableMetrics: config.enableMetrics || false,
             temperature: config.temperature || 0.3,
@@ -91,7 +91,7 @@ class SolverLLMService {
                     balanced: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
                     premium: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t'
                 },
-                costPer1K: { input: 0.005, output: 0.015 },
+                costPer1M: { input: 0.8, output: 3.2 }, // Fine-tuned GPT pricing per 1M tokens
                 supportsResponsesAPI: true,
                 async analyze(prompt, options = {}) {
                     console.log('🤖 Starting OpenAI structured analysis...');
@@ -151,7 +151,7 @@ class SolverLLMService {
                     balanced: 'grok-3-mini',
                     premium: 'grok-3-mini'
                 },
-                costPer1K: { input: 0.001, output: 0.003 },
+                costPer1M: { input: 1.0, output: 3.0 },
                 supportsResponsesAPI: false,
                 async analyze(prompt, options = {}) {
                     const response = await this.client.chat.completions.create({
@@ -186,7 +186,7 @@ class SolverLLMService {
                     balanced: 'ministral-8b-latest',
                     premium: 'mistral-large-latest'
                 },
-                costPer1K: { input: 0.002, output: 0.006 },
+                costPer1M: { input: 2.0, output: 6.0 },
                 supportsResponsesAPI: false,
                 async analyze(prompt, options = {}) {
                     const response = await this.client.chat.completions.create({
@@ -208,34 +208,55 @@ class SolverLLMService {
             });
         }
 
-        // Google Gemini provider (fallback to generate content)
-        if (process.env.GOOGLE_API_KEY) {
-            const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-            this.providers.set('google', {
-                name: 'google',
-                client: genAI.getGenerativeModel({ model: 'gemini-2.0-flash' }),
+        // Fireworks AI provider
+        if (process.env.FIREWORKS_API_KEY) {
+            this.providers.set('fireworks', {
+                name: 'fireworks',
+                client: new OpenAI({ 
+                    apiKey: process.env.FIREWORKS_API_KEY,
+                    baseURL: 'https://api.fireworks.ai/inference/v1'
+                }),
                 models: {
-                    fast: 'gemini-2.0-flash',
-                    balanced: 'gemini-2.0-flash',
-                    premium: 'gemini-2.0-flash'
+                    fast: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
+                    balanced: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
+                    premium: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507'
                 },
-                costPer1K: { input: 0.002, output: 0.006 },
+                costPer1M: { input: 0.22, output: 0.88 }, // Qwen pricing per 1M tokens
                 supportsResponsesAPI: false,
                 async analyze(prompt, options = {}) {
-                    const fullPrompt = `${prompt.system}\n\n${prompt.user}`;
-                    
-                    const response = await this.client.generateContent({
-                        contents: [{ parts: [{ text: fullPrompt }] }],
-                        generationConfig: {
-                            temperature: options.temperature || 0.3,
-                            maxOutputTokens: options.maxTokens || 1000
-                        }
-                    });
+                    const request = {
+                        model: options.model || this.models.balanced,
+                        messages: [
+                            { role: 'system', content: prompt.system },
+                            { role: 'user', content: prompt.user }
+                        ],
+                        temperature: options.temperature || 0.6,
+                        max_tokens: options.maxTokens || 4096,
+                        top_p: 1,
+                        top_k: 40,
+                        presence_penalty: 0,
+                        frequency_penalty: 0
+                    }
+                    const response = await this.client.chat.completions.create(request);
 
+                    console.log(JSON.stringify(request.messages, null, 1));
+
+                    const messageContent = response.choices[0].message.content;
+                    
+                    console.log('✅ OpenAI structured response received:', {
+                        model: response.model,
+                        usage: response.usage,
+                        contentLength: messageContent.length,
+                        contentPreview: messageContent.substring(0, 100) + '...'
+                    });
+                    
+                    console.log('📊 Full response content:', messageContent);
+                    
+                    
                     return {
-                        content: response.response.text(),
-                        usage: { total_tokens: 0 }, // Gemini doesn't provide detailed usage
-                        model: 'gemini-2.0-flash'
+                        content: response.choices[0].message.content,
+                        usage: response.usage,
+                        model: response.model
                     };
                 }
             });
@@ -326,13 +347,13 @@ class SolverLLMService {
             const analysisPrompt = this.promptBuilder.buildAnalysisPrompt(handMeta, trimmedSnapshots);
 
             // Use a fast and cheap model for the analysis phase
-            const analysisOptions = { ...options, provider: 'openai', modelTier: 'fast' };
+            const analysisOptions = { ...options, provider: 'fireworks', modelTier: 'fast' };
             const { provider, modelTier } = this.selectProvider(analysisPrompt, analysisOptions);
 
             const response = await this.callLLMWithRetry(provider, analysisPrompt, {
                 modelTier,
                 temperature: 0.1, // Low temperature for deterministic analysis
-                maxTokens: 500,
+                maxTokens: 1500,
                 responseSchema: GenerationSpecSchema // Pass the correct schema for this phase
             });
 
@@ -389,9 +410,9 @@ class SolverLLMService {
 
         let selectedProvider, modelTier;
 
-        // Prefer OpenAI with Responses API for best structured output
-        if (this.providers.has('openai')) {
-            selectedProvider = this.providers.get('openai');
+        // Try to use the configured default provider first
+        if (this.providers.has(this.config.defaultProvider)) {
+            selectedProvider = this.providers.get(this.config.defaultProvider);
             
             if (estimatedTokens < 2000 && complexity < 3) {
                 modelTier = 'fast';
@@ -400,17 +421,21 @@ class SolverLLMService {
             } else {
                 modelTier = 'premium';
             }
+        } else if (this.providers.has('fireworks')) {
+            // First fallback: Fireworks for cost efficiency
+            selectedProvider = this.providers.get('fireworks');
+            modelTier = 'balanced';
+        } else if (this.providers.has('openai')) {
+            // Second fallback: OpenAI with Responses API for best structured output
+            selectedProvider = this.providers.get('openai');
+            modelTier = 'balanced';
         } else if (this.providers.has('mistral')) {
-            // Fallback to Mistral for quality
+            // Third fallback: Mistral for quality
             selectedProvider = this.providers.get('mistral');
             modelTier = 'balanced';
         } else if (this.providers.has('grok')) {
-            // Fallback to Grok for cost efficiency
+            // Fourth fallback: Grok for cost efficiency
             selectedProvider = this.providers.get('grok');
-            modelTier = 'balanced';
-        } else if (this.providers.has('google')) {
-            // Fallback to Google
-            selectedProvider = this.providers.get('google');
             modelTier = 'balanced';
         } else {
             throw new Error('No LLM providers available');
@@ -493,10 +518,10 @@ class SolverLLMService {
      */
     getFallbackProvider(primaryProviderName) {
         const fallbackOrder = {
-            'openai': ['mistral', 'grok', 'google'],
-            'mistral': ['openai', 'grok', 'google'],
-            'grok': ['openai', 'mistral', 'google'],
-            'google': ['openai', 'mistral', 'grok']
+            'fireworks': ['openai', 'mistral', 'grok'],
+            'openai': ['fireworks', 'mistral', 'grok'],
+            'mistral': ['fireworks', 'openai', 'grok'],
+            'grok': ['fireworks', 'openai', 'mistral']
         };
 
         const fallbacks = fallbackOrder[primaryProviderName] || [];
@@ -573,7 +598,7 @@ class SolverLLMService {
             snapshots: mergedSnapshots,
             meta: {
                 solverVersion: '1.0',
-                llmModelUsed: this.config.defaultModel,
+                llmModelUsed: this.config.defaultProvider,
                 generatedAt: new Date().toISOString(),
                 apiVersion: 'responses-v1'
             }
@@ -622,12 +647,23 @@ class SolverLLMService {
         this.metrics.totalRequests++;
         this.metrics.totalTokensUsed += usage.total_tokens || 0;
         
+        // Calculate cost based on provider pricing
+        const provider = this.providers.get(providerName);
+        let requestCost = 0;
+        if (provider && provider.costPer1M && usage.prompt_tokens && usage.completion_tokens) {
+            const inputCost = (usage.prompt_tokens / 1000000) * provider.costPer1M.input;
+            const outputCost = (usage.completion_tokens / 1000000) * provider.costPer1M.output;
+            requestCost = inputCost + outputCost;
+            this.metrics.totalCost += requestCost;
+        }
+        
         // Update provider-specific metrics
         if (!this.metrics.providerUsage[providerName]) {
-            this.metrics.providerUsage[providerName] = { requests: 0, tokens: 0 };
+            this.metrics.providerUsage[providerName] = { requests: 0, tokens: 0, cost: 0 };
         }
         this.metrics.providerUsage[providerName].requests++;
         this.metrics.providerUsage[providerName].tokens += usage.total_tokens || 0;
+        this.metrics.providerUsage[providerName].cost += requestCost;
 
         // Update rolling average latency
         this.metrics.averageLatency = 
@@ -663,7 +699,13 @@ class SolverLLMService {
         const tokens = this.promptBuilder.estimateTokens(prompt);
         
         const { provider } = this.selectProvider(prompt);
-        const estimatedCost = (tokens / 1000) * (provider.costPer1K.input + provider.costPer1K.output);
+        // Estimate cost assuming 70% input, 30% output token distribution
+        const estimatedInputTokens = tokens * 0.7;
+        const estimatedOutputTokens = tokens * 0.3;
+        const estimatedCost = provider.costPer1M ? 
+            (estimatedInputTokens / 1000000) * provider.costPer1M.input + 
+            (estimatedOutputTokens / 1000000) * provider.costPer1M.output :
+            0;
         
         return {
             estimatedTokens: tokens,

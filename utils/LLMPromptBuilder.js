@@ -11,63 +11,42 @@ class LLMPromptBuilder {
         // Configuration options
         this.useTagSystem = options.useTagSystem !== false; // Default to true
         this.enableDebug = options.enableDebug || false;
-
         this.analysisPrompt = `
 You are a poker meta-strategist. Your role is to analyze a series of strategic tags representing key moments in a poker hand and create a high-level "generation spec" for a poker coach AI.
 
 Your goal is to identify the core strategic narrative and the most important teaching moments.
 
-INPUT:
-You will receive a JSON object containing hand metadata and an array of "solverTags" for each decision point (snapshot).
+INPUT: You will receive a JSON object containing hand metadata and an array of "solverTags" for each decision point (snapshot).
 
 TASK:
-1.  Review all solverTags across all snapshots.
-2.  Identify the most critical, overarching strategic theme or lesson in the hand.
-3.  Select the 3-5 most important tags that best illustrate this theme.
-4.  Outline a clear narrative arc for how a coach should explain the hand.
-5.  Specify a coaching tone.
 
-[ACTION:*] - What to do and why
-• CHECK - X, checking action (PROTECT_RANGE, TRAP, POT_CONTROL, WEAK, REALIZE_EQ)
-• BET/RAISE - B/R with sizing (VALUE, BLUFF, SEMI_BLUFF, TURN_INTO_BLUFF, PROTECTION)
-• CALL/FOLD - C/F decisions (POT_ODDS, BLUFF_CATCH)
-• BETSIZE/RAISESIZE - SMALL/MEDIUM/LARGE/OVERBET with % of pot
+Review all solverTags across all snapshots. Identify the most critical, overarching strategic theme or lesson in the hand. Develop clauses that transform the solver's info and raw data into qualitative claims that explains why a solver might choose a certain line, supported by the 3-5 most important tags that best illustrate this theme on each street. Outline a clear narrative arc for how a coach should explain the hand. Specify a coaching tone. [ACTION:*] - What to do and why • CHECK - X, checking action (PROTECT_RANGE, TRAP, POT_CONTROL, WEAK, REALIZE_EQ) • BET/RAISE - B/R with sizing (VALUE, BLUFF, SEMI_BLUFF, TURN_INTO_BLUFF, PROTECTION) • CALL/FOLD - C/F decisions (POT_ODDS, BLUFF_CATCH) • BETSIZE/RAISESIZE - SMALL/MEDIUM/LARGE/OVERBET with % of pot
 
-[HAND:*] - Your hand strength
-• TYPE: VALUE_PREMIUM (nuts), VALUE_MARGINAL (decent), DRAW_STRONG/WEAK, BLUFF_CATCHER, AIR
-• ARCHETYPE: Specific hand (e.g., "Top Pair Good Kicker")
-• FEATURES: MULTI_DRAW, BLOCKER_RELEVANT, VULNERABLE, REDRAW_POTENTIAL
+[HAND:*] - Your hand strength • TYPE: VALUE_PREMIUM (nuts), VALUE_MARGINAL (decent), DRAW_STRONG/WEAK, BLUFF_CATCHER, AIR • ARCHETYPE: Specific hand (e.g., "Top Pair Good Kicker") • FEATURES: MULTI_DRAW, BLOCKER_RELEVANT, VULNERABLE, REDRAW_POTENTIAL
 
-[BOARD:*] - Board texture
-• WETNESS: WET (many draws), SEMI_WET, DRY (few draws)
-• TEXTURE: PAIRED, MONOTONE, CONNECTED
-• NEXT_STREET: SWINGY vs STATIC, BEST/WORST cards
+[BOARD:*] - Board texture • WETNESS: WET (many draws), SEMI_WET, DRY (few draws) • TEXTURE: PAIRED, MONOTONE, CONNECTED • NEXT_STREET: SWINGY vs STATIC, BEST/WORST cards
 
-[RANGE:*] - Who's ahead
-• ADVANTAGE: HERO_STRONG/SLIGHT, VILLAIN_STRONG/SLIGHT, NEUTRAL
-• HERO/VILLAIN: POLARIZED (nuts+air), CONDENSED (medium), CAPPED (no nuts)
+[RANGE:*] - Who's ahead • ADVANTAGE: HERO_STRONG/SLIGHT, VILLAIN_STRONG/SLIGHT, NEUTRAL • HERO/VILLAIN: POLARIZED (nuts+air), CONDENSED (medium), CAPPED (no nuts)
 
-[BLOCKER:*] - Card removal
-• What you block (VALUE/NUTS/BLUFFS/DRAWS) + examples like "AK,AQ"
-• Context: GOOD_BLUFF, GOOD_BLUFFCATCH, TURN_TO_BLUFF
+[BLOCKER:*] - Card removal • What you block (VALUE/NUTS/BLUFFS/DRAWS) + examples like "AK,AQ" • Context: GOOD_BLUFF, GOOD_BLUFFCATCH, TURN_TO_BLUFF
 
-[SPR:*] - Stack depth (SHALLOW <2, MEDIUM 2-6, DEEP 6-13, VERY_DEEP >13)
-[POTODDS:*] - Getting X:1, need Y% equity
-[MIX:*] - Solver mixes (FREQ ratios, REASON why)
-[POSITION:*] - IP (in position) or OOP (out of position)
-[STRAT:*] - Strategic goals (EXTRACT_VALUE, DENY_EQUITY, LEVERAGE_NUTS)
-[REASONING:*] - Deeper strategic interplay (e.g., [REASONING:RANGE:STRATEGY:OVERBET_POLARIZED_RANGE])
+[SPR:] - Stack depth (SHALLOW <2, MEDIUM 2-6, DEEP 6-13, VERY_DEEP >13) [POTODDS:] - Getting X:1, need Y% equity [MIX:] - Solver mixes (FREQ ratios, REASON why) [POSITION:] - IP (in position) or OOP (out of position) [STRAT:] - Strategic goals (EXTRACT_VALUE, DENY_EQUITY, LEVERAGE_NUTS) [REASONING:] - Deeper strategic interplay (e.g., [REASONING:RANGE:STRATEGY:OVERBET_POLARIZED_RANGE])
 
-OUTPUT FORMAT:
-Return a single, clean JSON object with the following structure. Do not include any other text or explanations.
-{
-    "mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board').",
-    "keyFocusTags": [{ street: "...", tags: ["Key 5-6 TAGs to focus on, MUST use supplied tags, do not invent something"] }],
-    "narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').",
-    "tone": "A coaching tone (e.g., 'Direct and educational', 'Friendly and encouraging')."
+OUTPUT FORMAT: Return a single, clean JSON object with the following structure. Do not include any other text or explanations.
+
+{ 
+"mainStrategicConcept": "The core lesson of the hand (e.g., 'Leveraging a range advantage on a wet board')", 
+"analysis": [ 
+{ 
+"street": "...", 
+"claims": [{ 
+    clause: "...", 
+    supportingTags: ["Key 5-6 TAGs that work together to support those claims, MUST use supplied tags, do not invent something"] 
+  } 
+}] 
+"narrativeArc": "A brief plan for the explanation (e.g., 'Start with pre-flop advantage, show how the wet board is a threat, then explain why the protective bet is correct.').", 
+"tone": "A coaching tone" 
 }
-
-
 `;
         
         // System prompt template
@@ -142,6 +121,7 @@ Allowed tags: <range hero> <range villain> <mix> <blockers> <ev_duel> <board_tex
 Prefer tags listed in tagHints; use no more than 3 tags per comment.
 Use tags EXACTLY as <tag>. Do NOT add colons or percentages inside the angle brackets.
 Always try to include at least 1 tag per streetComment.
+You must only add tags at the end of your analysis.
 
 OUTPUT FORMAT:
 {

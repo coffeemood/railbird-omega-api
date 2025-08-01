@@ -33,7 +33,7 @@ class LLMFlowTester {
         const useTwoPhaseFlow = process.env.USE_TWO_PHASE_FLOW === 'true' || false;
         
         this.llmService = new SolverLLMService({
-            defaultModel: 'openai',
+            defaultModel: 'fireworks',
             enableMetrics: true,
             enableFallback: true,
             temperature: 0.3,
@@ -175,7 +175,7 @@ class LLMFlowTester {
             // Token comparison analysis
             this.benchmark.start('token_comparison');
             const LLMPromptBuilder = require('../utils/LLMPromptBuilder');
-            const promptBuilder = new LLMPromptBuilder({ useTagSystem: false });
+            const promptBuilder = new LLMPromptBuilder({ useTagSystem: true });
             
             // Build handMeta using promptBuilder's method
             const handMeta = promptBuilder.formatHandMeta(this.results.hand);

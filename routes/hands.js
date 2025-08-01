@@ -189,67 +189,83 @@ router.post(
         return res.status(400).json({ message: 'Invalid hand or unauthorized access' });
       }
 
-      const balance = await Users.findOneByQuery({ user_id: ownerId });
-      if (balance.coins < 1) {
-        return res.status(400).json({ message: 'Insufficient balance' });
-      }
-
-      if (balance.email_verified === false) {
-        return res.status(400).json({ message: 'Please verify your email to continue' });
-      }
-
-      // if (!_.get(hand, 'info.sawFlop', false)) {
-      //   return res.status(400).json({ message: 'We only support post-flop analysis for now. Please try another hand.' });
-      // }
-
       const foundFile = await FileUploads.findOneByQuery({ _id: hand.sourceFile, ownerId });
       if (!foundFile) {
         return res.status(400).json({ message: 'Invalid hand or unauthorized access' });
       }
 
-      // Perform hand analysis
-      const analysis = await analyzePokerHand(hand, 'openai');
-      // const analysis = await analyzePokerHand(hand, 'mistral');
-      let parsed = {};
+      // Initialize SolverLLMService with two-phase flow
+      const SolverLLMService = require('../utils/SolverLLMService');
+      const llmService = new SolverLLMService({
+        defaultModel: 'fireworks',
+        enableMetrics: true,
+        enableFallback: true,
+        temperature: 0.3,
+        useTwoPhaseFlow: false
+      });
 
-      // Remove markdown code block formatting and parse JSON
-      try {
-        const cleanAnalysis = analysis.replace(/```json\n|\n```/g, '');
-        parsed = JSON.parse(cleanAnalysis);
-      } catch (error) {
-        console.error('Error parsing analysis:', error);
-        parsed = {
-          tlDr: 'Analysis unavailable due to error',
-          keyDecisions: [],
-          considerations: [ 'Analysis skipped - please try again later' ],
-          confidenceScore: 0
-        };
-      }
+      // Generate basic snapshots
+      const snapshots = generateSnapshots(hand);
+      console.log(`Generated ${snapshots.length} snapshots for hand ${_id}`);
+
+      // Enrich snapshots with solver data
+      const enrichedSnapshots = await Solves.prepareSnapshots(hand._id);
+      console.log(`Enriched ${enrichedSnapshots.length} snapshots with solver data`);
+
+      // Extract decision point action indices for frontend mapping
+      const decisionPointIndices = snapshots.map(snapshot => ({
+        snapshotIndex: snapshot.index,
+        actionIndex: snapshot.decisionPoint.actionIndex,
+        street: snapshot.decisionPoint.state.street
+      }));
+
+      // Run LLM analysis with enriched snapshots
+      const llmAnalysis = await llmService.analyzeHand(enrichedSnapshots, hand);
+      console.log('LLM analysis completed:', {
+        headline: llmAnalysis.headline,
+        handScore: llmAnalysis.handScore,
+        snapshotCount: llmAnalysis.snapshots.length
+      });
+
       // Update the hand with analysis results
       await Hands.updateByQuery(
         { _id, ownerId },
-        { analysis: parsed }
+        { analysis: llmAnalysis }
       );
 
-      const updatedCoins = balance.coins ? balance.coins - 1 : 0;
-      await Users.updateByQuery(
-        { user_id: ownerId },
-        { coins: updatedCoins }
-      );
-
-      await pusher.trigger(`user-${balance._id}`, 'coin-update', {
-        newBalance: updatedCoins
-      });
-
+      // Return the complete EnrichedHandAnalysis following the frontend contract
       return res.status(200).json({
         status: 'success',
-        data: parsed
+        data: {
+          handMeta: llmAnalysis.handMeta,
+          headline: llmAnalysis.headline,
+          tlDr: llmAnalysis.tlDr,
+          handScore: llmAnalysis.handScore,
+          snapshots: llmAnalysis.snapshots,
+          decisionPointIndices: decisionPointIndices, // Add mapping data for frontend
+          meta: llmAnalysis.meta
+        }
       });
+
     } catch (error) {
       console.error('Error analyzing hand:', error);
+      
+      // Return structured error response
       return res.status(500).json({
         status: 'error',
-        message: 'Failed to analyze hand'
+        message: 'Failed to analyze hand',
+        data: {
+          headline: 'Analysis Failed',
+          tlDr: 'Unable to complete hand analysis - please try again',
+          handScore: 0,
+          snapshots: [],
+          meta: {
+            solverVersion: '1.0',
+            llmModelUsed: 'fallback',
+            generatedAt: new Date().toISOString(),
+            error: true
+          }
+        }
       });
     }
   }
