@@ -16,6 +16,7 @@ const { generateSnapshots } = require('../utils/solver-snapshot-generator');
 const { findSimilarNode } = require('../utils/vectorSearch');
 const { processSnapshotWithSolverData } = require('../utils/solverNodeService');
 const Solves = require('../db/collections/Solves');
+const CoachLLMService = require('../utils/CoachLLMService');
 
 // Import debug flags for matching criteria analysis
 const { generateDebugFlags } = require('../utils/debug-flags');
@@ -197,11 +198,12 @@ router.post(
       // Initialize SolverLLMService with two-phase flow
       const SolverLLMService = require('../utils/SolverLLMService');
       const llmService = new SolverLLMService({
-        defaultModel: 'fireworks',
+        defaultModel: 'openai',
+        analysisProvider: 'fireworks',
         enableMetrics: true,
         enableFallback: true,
         temperature: 0.3,
-        useTwoPhaseFlow: false
+        useTwoPhaseFlow: true,
       });
 
       // Generate basic snapshots
@@ -233,6 +235,63 @@ router.post(
         { analysis: llmAnalysis }
       );
 
+      // Create initial coaching chat
+      let chatId = null;
+      try {
+        const coachService = new CoachLLMService();
+        
+        // Format hand metadata for coaching
+        const handMeta = {
+          handId: hand._id,
+          effStackBB: hand.info?.effStack || 100,
+          blinds: {
+            sb: hand.header?.sb ? hand.header.sb / hand.header.bb : 0.5,
+            bb: 1,
+            ante: hand.header?.ante ? hand.header.ante / hand.header.bb : 0
+          },
+          heroPos: hand.info?.heroPos || hand.preflopSummary?.pos || 'Unknown',
+          heroCards: hand.preflopSummary?.cards ? [hand.preflopSummary.cards.card1, hand.preflopSummary.cards.card2] : [],
+          gameType: hand.header?.gametype || 'cash'
+        };
+
+        // Format snapshots for coaching (with tags)
+        const formattedSnapshots = enrichedSnapshots.map((snapshot, index) => ({
+          index,
+          street: snapshot.snapshotInput.street,
+          board: snapshot.snapshotInput.board || [],
+          potBB: snapshot.snapshotInput.pot_bb,
+          heroStackBB: snapshot.snapshotInput.heroStackBB,
+          heroAction: snapshot.decisionPoint?.heroAction?.action,
+          solverTags: snapshot.solverTags || [],
+          // Minimal solver data for mistake calculation
+          evHero: snapshot.solver?.evHero,
+          rangeAdvantage: snapshot.solver?.rangeAdvantage,
+          recommendedAction: snapshot.solver?.optimalStrategy?.recommendedAction?.action
+        }));
+
+        // Extract analysis metadata for coaching chat
+        const analysisMetadata = {
+          model: llmAnalysis.meta?.llmModelUsed || 'unknown',
+          provider: llmAnalysis.meta?.provider || 'unknown',
+          tokenUsage: llmAnalysis.meta?.tokenUsage,
+          generatedAt: llmAnalysis.meta?.generatedAt
+        };
+
+        chatId = await coachService.createInitialCoachingChat(
+          hand._id,
+          ownerId,
+          handMeta,
+          formattedSnapshots,
+          llmAnalysis,
+          analysisMetadata
+        );
+
+        console.log(`Created coaching chat ${chatId} for hand ${_id}`);
+      } catch (coachError) {
+        console.error('Failed to create coaching chat:', coachError);
+        // Don't fail the entire request if coaching chat creation fails
+      }
+
       // Return the complete EnrichedHandAnalysis following the frontend contract
       return res.status(200).json({
         status: 'success',
@@ -243,6 +302,7 @@ router.post(
           handScore: llmAnalysis.handScore,
           snapshots: llmAnalysis.snapshots,
           decisionPointIndices: decisionPointIndices, // Add mapping data for frontend
+          chatId: chatId, // Add coaching chat ID for frontend reference
           meta: llmAnalysis.meta
         }
       });
@@ -1229,6 +1289,122 @@ router.post(
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
+        details: error.message
+      });
+    }
+  }
+);
+
+// Coaching chat endpoint
+router.post(
+  '/v1/coach/chat',
+  async (req, res) => {
+    try {
+      const { chatId, message, focusSnapshot } = req.body;
+      const ownerId = Account.userId();
+
+      // Validate required fields
+      if (!chatId || !message) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Missing required fields: chatId and message are required'
+        });
+      }
+
+      // Verify chat ownership
+      const CoachChats = require('../db/collections/CoachChats');
+      const chat = await CoachChats.findById(chatId);
+      if (!chat) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'Chat not found'
+        });
+      }
+
+      if (chat.userId !== ownerId) {
+        return res.status(403).json({
+          status: 'error',
+          message: 'Unauthorized access to chat'
+        });
+      }
+
+      // Initialize coaching service
+      const coachService = new CoachLLMService();
+      
+      // Continue the coaching conversation
+      const response = await coachService.continueCoaching(
+        chatId,
+        message,
+        focusSnapshot
+      );
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          content: response.content,
+          references: response.references,
+          suggestedFollowUp: response.suggestedFollowUp,
+          metadata: response.metadata
+        }
+      });
+
+    } catch (error) {
+      console.error('Error in coaching chat:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to process coaching message',
+        details: error.message
+      });
+    }
+  }
+);
+
+// Get coaching chat history
+router.get(
+  '/v1/coach/chat/:chatId',
+  async (req, res) => {
+    try {
+      const { chatId } = req.params;
+      const ownerId = Account.userId();
+
+      const CoachChats = require('../db/collections/CoachChats');
+      const chat = await CoachChats.findById(chatId);
+      
+      if (!chat) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'Chat not found'
+        });
+      }
+
+      if (chat.userId !== ownerId) {
+        return res.status(403).json({
+          status: 'error',
+          message: 'Unauthorized access to chat'
+        });
+      }
+
+      // Return only the conversation messages (exclude system prompts)
+      const conversationMessages = chat.messages.filter(msg => 
+        msg.role !== 'system' || msg.content.handMeta // Keep initial hand context
+      );
+
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          chatId: chat._id,
+          handId: chat.handId,
+          messages: conversationMessages,
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt
+        }
+      });
+
+    } catch (error) {
+      console.error('Error fetching chat history:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to fetch chat history',
         details: error.message
       });
     }

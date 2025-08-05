@@ -152,6 +152,8 @@ class Solves extends SuperCollection {
       // 4. Vector search (exclude RIVER) - batch for better performance
       const vectorSearchStartTime = Date.now();
       const vectorTargets = [...flopSnapshots, ...turnSnapshots];
+
+      console.log(snapshots);
       
       // Try batched search first, fall back to individual if not available
       let vectorResults;
@@ -178,6 +180,7 @@ class Solves extends SuperCollection {
       // Process FLOP + TURN in parallel and collect TURN vector results
       const turnVectorResults = [];
       const enrichmentPromises = vectorTargets.map(async (snapshot, i) => {
+        console.log(vectorResults[i]);
         const vectorResult = vectorResults[i];
         const enriched = await this.enrichSnapshot(snapshot, vectorResult, zstCache);
         
@@ -225,6 +228,7 @@ class Solves extends SuperCollection {
     const enrichStartTime = Date.now();
     const street = snapshot.snapshotInput.street;
     console.log(`🔍 [TIMING] Starting ${street} enrichment for snapshot`);
+    console.log({vectorResult});
     
     if (!vectorResult?.nodeMetadata) {
       console.log(`⚠️  [TIMING] ${street} enrichment skipped - no vector result (${Date.now() - enrichStartTime}ms)`);

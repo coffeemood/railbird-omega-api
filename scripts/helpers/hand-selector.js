@@ -16,7 +16,8 @@ async function findRandomRiverHand() {
         const aggregation = [
             {
                 $match: {
-                    _id: 10109747,
+                    _id: 10119713,
+                    // _id: 10109747,
                     'info.sawRiver': true,
                     // Additional filters for better test data
                     'info.effStack': { $gte: 10, $lte: 200 }, // Reasonable stack sizes

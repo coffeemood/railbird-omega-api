@@ -19,7 +19,7 @@
 class TagGenerationService {
   constructor(options = {}) {
     this.tagPriority = options.tagPriority || 'balanced'; // 'concise', 'balanced', 'verbose'
-    this.enableReasoning = options.enableReasoning !== false;
+    this.enableReasoning = true;
     this.maxTagsPerCategory = options.maxTagsPerCategory || 5;
     this.enableDebug = options.enableDebug || false;
   }

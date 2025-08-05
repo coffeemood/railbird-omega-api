@@ -47,6 +47,7 @@ class SolverLLMService {
     constructor(config = {}) {
         this.config = {
             defaultProvider: config.defaultModel || 'fireworks', // defaultModel is actually the provider name
+            analysisProvider: config.analysisProvider || 'fireworks', // Provider for analysis phase
             enableFallback: config.enableFallback !== false,
             enableMetrics: config.enableMetrics || false,
             temperature: config.temperature || 0.3,
@@ -85,7 +86,7 @@ class SolverLLMService {
                 name: 'openai',
                 client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
                 models: {
-                    fast: 'gpt-4.1-nano',
+                    fast: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
                     // balanced: 'ft:gpt-4o-mini-2024-07-18:personal:my-gto-coach-3:B3O6rADI',
                     // balanced: 'ft:gpt-4o-mini-2024-07-18:personal::B1uEe3O1',
                     balanced: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
@@ -346,8 +347,8 @@ class SolverLLMService {
             console.log('🧠 Starting analysis phase...');
             const analysisPrompt = this.promptBuilder.buildAnalysisPrompt(handMeta, trimmedSnapshots);
 
-            // Use a fast and cheap model for the analysis phase
-            const analysisOptions = { ...options, provider: 'fireworks', modelTier: 'fast' };
+            // Use configured provider for the analysis phase
+            const analysisOptions = { ...options, provider: this.config.analysisProvider, modelTier: 'fast' };
             const { provider, modelTier } = this.selectProvider(analysisPrompt, analysisOptions);
 
             const response = await this.callLLMWithRetry(provider, analysisPrompt, {
