@@ -59,7 +59,11 @@ class CoachChats extends SuperCollection {
       updatedAt: now,
     };
 
-    return await this.insert(chatData);
+    const result = await this.insert(chatData);
+    console.log('CoachChats.createChatForHand - insert result:', result);
+    
+    // Return the inserted document with _id
+    return result;
   }
 
   /**

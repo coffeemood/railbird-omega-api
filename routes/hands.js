@@ -16,10 +16,12 @@ const { generateSnapshots } = require('../utils/solver-snapshot-generator');
 const { findSimilarNode } = require('../utils/vectorSearch');
 const { processSnapshotWithSolverData } = require('../utils/solverNodeService');
 const Solves = require('../db/collections/Solves');
+const CoachChats = require('../db/collections/CoachChats');
 const CoachLLMService = require('../utils/CoachLLMService');
 
 // Import debug flags for matching criteria analysis
 const { generateDebugFlags } = require('../utils/debug-flags');
+const LLMPromptBuilder = require('../utils/LLMPromptBuilder');
 
 const potSizesRules = {
   '0-10bb': { $lte: 10 },
@@ -198,12 +200,12 @@ router.post(
       // Initialize SolverLLMService with two-phase flow
       const SolverLLMService = require('../utils/SolverLLMService');
       const llmService = new SolverLLMService({
-        defaultModel: 'openai',
+        defaultModel: 'fireworks',
         analysisProvider: 'fireworks',
         enableMetrics: true,
         enableFallback: true,
         temperature: 0.3,
-        useTwoPhaseFlow: true,
+        useTwoPhaseFlow: false,
       });
 
       // Generate basic snapshots
@@ -222,7 +224,9 @@ router.post(
       }));
 
       // Run LLM analysis with enriched snapshots
-      const llmAnalysis = await llmService.analyzeHand(enrichedSnapshots, hand);
+      const analysis = await llmService.analyzeHand(enrichedSnapshots, hand);
+      const llmAnalysis = analysis?.enrichedAnalysis;
+      const generationSpec = analysis?.generationSpec;
       console.log('LLM analysis completed:', {
         headline: llmAnalysis.headline,
         handScore: llmAnalysis.handScore,
@@ -235,7 +239,7 @@ router.post(
         { analysis: llmAnalysis }
       );
 
-      // Create initial coaching chat
+      //-------- Create initial coaching chat -----------
       let chatId = null;
       try {
         const coachService = new CoachLLMService();
@@ -269,6 +273,13 @@ router.post(
           recommendedAction: snapshot.solver?.optimalStrategy?.recommendedAction?.action
         }));
 
+        const promptBuilder = new LLMPromptBuilder();
+        const trimmedSnapshots = llmService.trimSnapshots(enrichedSnapshots);
+        const actionHistory = promptBuilder.consolidateActionHistory(trimmedSnapshots);
+        const initialAnalysis = _.pick(llmAnalysis, ['headline', 'tldr']);
+        const analyzedSnapshots = llmAnalysis.snapshots.map(snap => ({ id: snap.id, streetComment: snap.streetComment }));
+        const coachHandOff = { ...initialAnalysis, analyzedSnapshots }
+
         // Extract analysis metadata for coaching chat
         const analysisMetadata = {
           model: llmAnalysis.meta?.llmModelUsed || 'unknown',
@@ -281,8 +292,9 @@ router.post(
           hand._id,
           ownerId,
           handMeta,
+          actionHistory,
           formattedSnapshots,
-          llmAnalysis,
+          coachHandOff,
           analysisMetadata
         );
 
@@ -296,6 +308,7 @@ router.post(
       return res.status(200).json({
         status: 'success',
         data: {
+          generationSpec: generationSpec, // DELETE later 
           handMeta: llmAnalysis.handMeta,
           headline: llmAnalysis.headline,
           tlDr: llmAnalysis.tlDr,
@@ -1366,9 +1379,8 @@ router.get(
     try {
       const { chatId } = req.params;
       const ownerId = Account.userId();
-
-      const CoachChats = require('../db/collections/CoachChats');
-      const chat = await CoachChats.findById(chatId);
+      
+      const chat = await CoachChats.findById(+chatId);
       
       if (!chat) {
         return res.status(404).json({

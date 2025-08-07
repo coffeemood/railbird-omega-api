@@ -282,7 +282,8 @@ class Solves extends SuperCollection {
           console.log(`✅ Found target node "${nodeId}":`, {
             node_id: targetNodeFound.node_id,
             board: targetNodeFound.board,
-            street: targetNodeFound.street
+            street: targetNodeFound.street,
+            nextToAct: targetNodeFound.nextToAct,
           });
         } else {
           console.log(`❌ Node "${nodeId}" not found in array of ${nodeDataArray.length} nodes`);
@@ -301,11 +302,12 @@ class Solves extends SuperCollection {
 
         // Handle TURN fallback strategy
         const fallbackStartTime = Date.now();
-        if (solverBlock.optimalStrategy?.actionFrequencies?.length < 2) {
+        if (!solverBlock.optimalStrategy || solverBlock.optimalStrategy?.actionFrequencies?.length < 2) {
           // Use fallback metadata
           if (vectorResult.nodeMetadata.optimal_strategy) {
             try {
               solverBlock.optimalStrategy = JSON.parse(vectorResult.nodeMetadata.optimal_strategy);
+              console.log({ optimalStrategy: solverBlock.optimalStrategy })
             } catch (parseError) {
               console.warn('Failed to parse fallback strategy:', parseError.message);
             }
@@ -326,15 +328,17 @@ class Solves extends SuperCollection {
             enableReasoning: true,
             tagPriority: 'balanced'
           });
-          
-          solverTags = tagService.generateTags(solverBlock, {
+
+          const snapshotContext = {
             street: snapshot.snapshotInput.street,
             potBB: snapshot.snapshotInput.pot_bb || snapshot.snapshotInput.pot,
             effectiveStackBB: snapshot.snapshotInput.stack_bb || snapshot.snapshotInput.heroStackBB,
             heroAction: snapshot.heroAction,
             streetHistory: snapshot.streetActionsHistory,
             potOdds: snapshot.snapshotInput.potOdds,
-          });
+          }
+          
+          solverTags = tagService.generateTags(solverBlock, snapshotContext);
           
           console.log(`🏷️  [TIMING] Tag generation (${solverTags.length} tags): ${Date.now() - tagStartTime}ms`);
         } catch (tagError) {

@@ -116,7 +116,7 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
         ip: snapshotInput.stack_bb
       },
       positions: snapshotInput.positions || { oop: 'bb', ip: 'bu' },
-      nextToAct: targetNode.next_to_act === 'IP' ? 'ip' : 'oop',
+      nextToAct: targetNode.nextToAct && targetNode.nextToAct === 'ip' ? 'ip' : 'oop',
       sim: similarityScore
     };
 
@@ -136,7 +136,7 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
     // console.log({ targetNode })
 
     // Extract ranges from node data
-    const oopRange = targetNode.rangeStats.oop || `${heroHand}@100`;
+    const oopRange = targetNode.rangeStats.oop || ``;
     const ipRange = targetNode.rangeStats.ip || '';
     
     try {
@@ -239,17 +239,11 @@ async function buildSolverBlockFromNodeData(nodeAnalyses, snapshotInput, similar
           }))
         };
       } else {
-        solverBlock.optimalStrategy = {
-          recommendedAction: { action: 'Check', ev: 0, frequency: 1.0, actionType: 'check', sizing: null },
-          actionFrequencies: []
-        };
+        solverBlock.optimalStrategy = null;
       }
     } catch (error) {
       console.warn('Strategy analysis failed:', error.message);
-      solverBlock.optimalStrategy = {
-        recommendedAction: { action: 'Check', ev: 0, frequency: 1.0, actionType: 'check', sizing: null },
-        actionFrequencies: []
-      };
+      solverBlock.optimalStrategy = null;
     }
 
     // Add combo-specific strategy (NEW: extract strategy for hero's hand category)

@@ -324,7 +324,7 @@ class SolverLLMService {
             // 10. Track metrics
             this.updateMetrics(provider.name, Date.now() - startTime, llmResponse.usage);
 
-            return enrichedAnalysis;
+            return { enrichedAnalysis, generationSpec };
 
         } catch (error) {
             console.log(error);

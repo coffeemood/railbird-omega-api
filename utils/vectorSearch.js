@@ -213,6 +213,13 @@ async function findSimilarNode(snapshotInput, options = {}) {
         value: actionSequence
       }
     });
+
+    filter.must.push({
+      key: "next_to_act",
+      match: {
+        value: snapshotInput.next_to_act
+      }
+    })
     
     filter.must.push({
       key: "street",

@@ -25,7 +25,7 @@ class CoachLLMService {
     constructor(config = {}) {
         this.config = {
             temperature: config.temperature || 0.6, // Higher for more conversational
-            maxTokens: config.maxTokens || 1000,
+            maxTokens: config.maxTokens || 2500,
             maxContextTokens: config.maxContextTokens || 8000, // Reserve tokens for response
             maxMessagesInContext: config.maxMessagesInContext || 10,
             provider: config.provider || 'fireworks', // Default to Fireworks
@@ -260,8 +260,9 @@ Response guidelines:
      */
     async getLLMResponse(messages) {
         // Try primary provider (Fireworks)
-        const primaryProvider = this.providers.get(this.config.provider);
+        const primaryProvider = this.providers.get(this.config.provider || 'fireworks');
         if (primaryProvider) {
+            console.log({ primaryProvider })
             try {
                 return await this.callProvider(primaryProvider, messages);
             } catch (error) {
@@ -325,19 +326,11 @@ Response guidelines:
 
         // Regular chat completion (Fireworks or OpenAI fallback)
         const requestConfig = {
-            model: provider.model,
+            model: this.fireworksModel,
             messages: messages,
             temperature: this.config.temperature,
-            max_tokens: this.config.maxTokens
+            max_tokens: this.config.maxTokens,
         };
-
-        // Add Fireworks-specific parameters
-        if (provider.name === 'fireworks') {
-            requestConfig.top_p = 1;
-            requestConfig.top_k = 40;
-            requestConfig.presence_penalty = 0;
-            requestConfig.frequency_penalty = 0;
-        }
 
         const response = await provider.client.chat.completions.create(requestConfig);
 
@@ -367,7 +360,7 @@ Response guidelines:
      * @param {Object} analysisMetadata - Metadata from SolverLLMService (model, provider, etc.)
      * @returns {Promise<String>} Created chat ID
      */
-    async createInitialCoachingChat(handId, userId, handMeta, snapshots, analysis, analysisMetadata = {}) {
+    async createInitialCoachingChat(handId, userId, handMeta, actionHistory, snapshots, analysis, analysisMetadata = {}) {
         const now = new Date();
         
         const initialMessages = [
@@ -378,11 +371,11 @@ Response guidelines:
             },
             {
                 role: 'user',
-                content: {
+                content: JSON.stringify({
                     handMeta,
-                    actionHistory: [], // This would be built from snapshots
+                    actionHistory,
                     solverSnapshots: snapshots
-                },
+                }),
                 timestamp: now,
                 metadata: { focusSnapshot: null }
             },
@@ -398,7 +391,7 @@ Response guidelines:
         ];
 
         const chat = await CoachChats.createChatForHand(handId, userId, initialMessages);
-        return chat._id;
+        return chat;
     }
 
     /**
