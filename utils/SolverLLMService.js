@@ -8,260 +8,263 @@
 require('dotenv').config()
 const OpenAI = require('openai');
 const { z } = require('zod');
-const { zodResponseFormat } = require('openai/helpers/zod');
+const { zodTextFormat } = require('openai/helpers/zod');
 const SolverBlockTrimmer = require('./SolverBlockTrimmer');
 const LLMPromptBuilder = require('./LLMPromptBuilder');
 
 // Zod schema for structured poker analysis output
 const MistakeSchema = z.object({
-    text: z.string().describe("Brief description of the mistake"),
-    evLoss: z.number().describe("EV loss in big blinds"),
-    severity: z.number().min(0).max(100).describe("Mistake severity from 0-100")
+  text: z.string().describe("Brief description of the mistake"),
+  evLoss: z.number().describe("EV loss in big blinds"),
+  severity: z.number().min(0).max(100).describe("Mistake severity from 0-100")
 });
 
 const SnapshotAnalysisSchema = z.object({
-    id: z.number().describe("Snapshot index starting from 0"),
-    streetComment: z.string().describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
-    mistake: MistakeSchema.nullable().describe("Mistake details if EV loss > 0.5BB, null otherwise")
+  id: z.number().describe("Snapshot index starting from 0"),
+  streetComment: z.string().describe("Street analysis with UI tags like <range hero>, <mix>, <blockers>"),
+  mistake: MistakeSchema.nullable().describe("Mistake details if EV loss > 0.5BB, null otherwise")
 });
 
 const EnrichedHandAnalysisSchema = z.object({
-    headline: z.string().max(30).describe("3-5 word catchy title"),
-    tlDr: z.string().max(150).describe("One sentence summary of the hand"),
-    handScore: z.number().min(0).max(100).describe("Overall hand score: 100 - (total EV loss * 10)"),
-    snapshots: z.array(SnapshotAnalysisSchema).describe("Analysis for each street snapshot")
+  headline: z.string().max(30).describe("3-5 word catchy title"),
+  tlDr: z.string().max(150).describe("One sentence summary of the hand"),
+  handScore: z.number().min(0).max(100).describe("Overall hand score: 100 - (total EV loss * 10)"),
+  snapshots: z.array(SnapshotAnalysisSchema).describe("Analysis for each street snapshot")
 });
 
 const GenerationSpecSchema = z.object({
-    mainStrategicConcept: z.string().describe("The core lesson of the hand."),
-    keyFocusTags: z.array(z.object({
-        street: z.string().describe("The street name (FLOP, TURN, RIVER)"),
-        tags: z.array(z.string()).describe("Array of tag strings to focus on")
-    })).describe("An array of the 3-5 most important tags to focus on.").optional(),
-    analysis: z.array(z.any()).describe("Alternative analysis structure from non-OpenAI providers").optional(),
-    narrativeArc: z.string().describe("A brief plan for the explanation."),
-    tone: z.string().describe("A coaching tone.")
+  mainStrategicConcept: z.string().describe("The core lesson of the hand."),
+  keyFocusTags: z.array(z.object({
+      street: z.string().describe("The street name (FLOP, TURN, RIVER)"),
+      tags: z.array(z.string()).describe("Array of tag strings to focus on")
+  })).describe("An array of the 3-5 most important tags to focus on.").optional(),
+  analysis: z.array(z.any()).describe("Alternative analysis structure from non-OpenAI providers").optional(),
+  narrativeArc: z.string().describe("A brief plan for the explanation."),
+  tone: z.string().describe("A coaching tone.")
 });
 
 class SolverLLMService {
-    constructor(config = {}) {
-        this.config = {
-            defaultProvider: config.defaultModel || 'fireworks', // defaultModel is actually the provider name
-            analysisProvider: config.analysisProvider || 'fireworks', // Provider for analysis phase
-            enableFallback: config.enableFallback !== false,
-            enableMetrics: config.enableMetrics || false,
-            temperature: config.temperature || 0.3,
-            maxTokens: config.maxTokens || 1500,
-            useTwoPhaseFlow: config.useTwoPhaseFlow !== undefined ? config.useTwoPhaseFlow : false, // Default to single-pass
-            ...config
-        };
+  constructor(config = {}) {
+    this.config = {
+      defaultProvider: config.defaultModel || 'fireworks', // defaultModel is actually the provider name
+      analysisProvider: config.analysisProvider || 'fireworks', // Provider for analysis phase
+      enableFallback: config.enableFallback !== false,
+      enableMetrics: config.enableMetrics || false,
+      temperature: config.temperature || 0.3,
+      maxTokens: config.maxTokens || 1500,
+      useTwoPhaseFlow: config.useTwoPhaseFlow !== undefined ? config.useTwoPhaseFlow : false, // Default to single-pass
+      ...config
+    };
 
-        // Initialize providers
-        this.providers = new Map();
-        this.initializeProviders();
+    // Initialize providers
+    this.providers = new Map();
+    this.initializeProviders();
 
-        // Initialize utilities
-        this.trimmer = new SolverBlockTrimmer();
-        this.promptBuilder = new LLMPromptBuilder({ useTagSystem: true });
+    // Initialize utilities
+    this.trimmer = new SolverBlockTrimmer();
+    this.promptBuilder = new LLMPromptBuilder({ useTagSystem: true });
 
-        // Metrics tracking
-        this.metrics = {
-            totalRequests: 0,
-            totalTokensUsed: 0,
-            totalCost: 0,
-            errorCount: 0,
-            averageLatency: 0,
-            providerUsage: {}
-        };
-    }
+    // Metrics tracking
+    this.metrics = {
+      totalRequests: 0,
+      totalTokensUsed: 0,
+      totalCost: 0,
+      errorCount: 0,
+      averageLatency: 0,
+      providerUsage: {}
+    };
+  }
 
     /**
      * Initialize LLM providers with unified interface
      * @private
      */
     initializeProviders() {
-        // OpenAI provider with Responses API
-        if (process.env.OPENAI_API_KEY) {
-            this.providers.set('openai', {
-                name: 'openai',
-                client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-                models: {
-                    fast: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
-                    // balanced: 'ft:gpt-4o-mini-2024-07-18:personal:my-gto-coach-3:B3O6rADI',
-                    // balanced: 'ft:gpt-4o-mini-2024-07-18:personal::B1uEe3O1',
-                    balanced: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t',
-                    premium: 'ft:gpt-4.1-mini-2025-04-14:personal:my-gto-coach-4:BuTrDY8t'
-                },
-                costPer1M: { input: 0.8, output: 3.2 }, // Fine-tuned GPT pricing per 1M tokens
-                supportsResponsesAPI: true,
-                async analyze(prompt, options = {}) {
-                    console.log('🤖 Starting OpenAI structured analysis...');
-                    
-                    const responseSchema = options.responseSchema || EnrichedHandAnalysisSchema;
-                    const responseFormatName = options.responseSchema ? "generation_spec" : "poker_analysis";
+      // OpenAI provider with Responses API
+      if (process.env.OPENAI_API_KEY) {
+        this.providers.set('openai', {
+          name: 'openai',
+          client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+          models: {
+              fast: 'gpt-5-mini',
+              // balanced: 'ft:gpt-4o-mini-2024-07-18:personal:my-gto-coach-3:B3O6rADI',
+              // balanced: 'ft:gpt-4o-mini-2024-07-18:personal::B1uEe3O1',
+              balanced: 'gpt-5-mini',
+              premium: 'gpt-5'
+          },
+          costPer1M: { input: 0.8, output: 3.2 }, // Fine-tuned GPT pricing per 1M tokens
+          supportsResponsesAPI: true,
+          async analyze(prompt, options = {}) {
+            console.log('🤖 Starting OpenAI structured analysis...');
+            
+            const responseSchema = options.responseSchema || EnrichedHandAnalysisSchema;
+            const responseFormatName = options.responseSchema ? "generation_spec" : "poker_analysis";
 
-                    // Use structured outputs with Zod schema for reliable parsing
-                    const request = {
-                        model: options.model || this.models.balanced,
-                        // reasoning_effort: 'low',
-                        messages: [
-                            { role: 'system', content: prompt.system },
-                            { role: 'user', content: prompt.user }
-                        ],
-                        temperature: options.temperature || 0.4,
-                        max_tokens: options.maxTokens || 1000,
-                        response_format: zodResponseFormat(responseSchema, responseFormatName)
-                    };
-                    if (request.model === 'o3') request.reasoning_effort = 'low';
-                    if (request.model !== 'o3') request.temperature = 0.2;
-                    const response = await this.client.chat.completions.create(request);
+            // Use structured outputs with Zod schema for reliable parsing
+            const request = {
+              model: options.model || this.models.balanced,
+              input: [
+                { role: 'system', content: prompt.system },
+                { role: 'user', content: prompt.user }
+              ],
+              text: {
+                format: zodTextFormat(responseSchema, responseFormatName),
+                verbosity: 'low'
+              },
+              reasoning: {
+                effort: "minimal",
+              }
+            };
 
-                    console.log(JSON.stringify(request.messages, null, 1));
+            const response = await this.client.responses.create(request);
+            
+            console.log(JSON.stringify(request.messages, null, 1));
+            console.log(response)
 
-                    const messageContent = response.choices[0].message.content;
-                    
-                    console.log('✅ OpenAI structured response received:', {
-                        model: response.model,
-                        usage: response.usage,
-                        contentLength: messageContent.length,
-                        contentPreview: messageContent.substring(0, 100) + '...'
-                    });
-                    
-                    console.log('📊 Full response content:', messageContent);
-                    
-                    return {
-                        content: messageContent,  // Return the JSON string directly
-                        usage: response.usage,
-                        model: response.model,
-                        responseId: response.id
-                    };
-                }
+            const messageContent = response.output_text;
+            
+            console.log('✅ OpenAI structured response received:', {
+                model: response.model,
+                usage: response.usage,
+                contentLength: messageContent.length,
+                contentPreview: messageContent.substring(0, 100) + '...'
             });
-        }
+            
+            console.log('📊 Full response content:', messageContent);
+            
+            return {
+                content: messageContent,  // Return the JSON string directly
+                usage: response.usage,
+                model: response.model,
+                responseId: response.id
+            };
+          }
+        });
+      }
 
-        // Grok provider (fallback to chat completions)
-        if (process.env.GROK_API_KEY) {
-            this.providers.set('grok', {
-                name: 'grok',
-                client: new OpenAI({ 
-                    apiKey: process.env.GROK_API_KEY,
-                    baseURL: 'https://api.x.ai/v1'
-                }),
-                models: {
-                    fast: 'grok-3-mini',
-                    balanced: 'grok-3-mini',
-                    premium: 'grok-3-mini'
-                },
-                costPer1M: { input: 1.0, output: 3.0 },
-                supportsResponsesAPI: false,
-                async analyze(prompt, options = {}) {
-                    const response = await this.client.chat.completions.create({
-                        model: options.model || this.models.balanced,
-                        messages: [
-                            { role: 'system', content: prompt.system },
-                            { role: 'user', content: prompt.user }
-                        ],
-                        temperature: options.temperature || 0.3,
-                        max_tokens: options.maxTokens || 1000
-                    });
-                    
-                    return {
-                        content: response.choices[0].message.content,
-                        usage: response.usage,
-                        model: response.model
-                    };
+    // Grok provider (fallback to chat completions)
+    if (process.env.GROK_API_KEY) {
+        this.providers.set('grok', {
+            name: 'grok',
+            client: new OpenAI({ 
+                apiKey: process.env.GROK_API_KEY,
+                baseURL: 'https://api.x.ai/v1'
+            }),
+            models: {
+                fast: 'grok-3-mini',
+                balanced: 'grok-3-mini',
+                premium: 'grok-3-mini'
+            },
+            costPer1M: { input: 1.0, output: 3.0 },
+            supportsResponsesAPI: false,
+            async analyze(prompt, options = {}) {
+                const response = await this.client.chat.completions.create({
+                    model: options.model || this.models.balanced,
+                    messages: [
+                        { role: 'system', content: prompt.system },
+                        { role: 'user', content: prompt.user }
+                    ],
+                    temperature: options.temperature || 0.3,
+                    max_tokens: options.maxTokens || 1000
+                });
+                
+                return {
+                    content: response.choices[0].message.content,
+                    usage: response.usage,
+                    model: response.model
+                };
+            }
+        });
+    }
+
+    // Mistral provider
+    if (process.env.MISTRAL_API_KEY) {
+        this.providers.set('mistral', {
+            name: 'mistral',
+            client: new OpenAI({
+                apiKey: process.env.MISTRAL_API_KEY,
+                baseURL: 'https://api.mistral.ai/v1'
+            }),
+            models: {
+                fast: 'mistral-small-latest',
+                balanced: 'ministral-8b-latest',
+                premium: 'mistral-large-latest'
+            },
+            costPer1M: { input: 2.0, output: 6.0 },
+            supportsResponsesAPI: false,
+            async analyze(prompt, options = {}) {
+                const response = await this.client.chat.completions.create({
+                    model: options.model || this.models.balanced,
+                    messages: [
+                        { role: 'system', content: prompt.system },
+                        { role: 'user', content: prompt.user }
+                    ],
+                    temperature: options.temperature || 0.3,
+                    max_tokens: options.maxTokens || 1000
+                });
+                
+                return {
+                    content: response.choices[0].message.content,
+                    usage: response.usage,
+                    model: response.model
+                };
+            }
+        });
+    }
+
+    // Fireworks AI provider
+    if (process.env.FIREWORKS_API_KEY) {
+        this.providers.set('fireworks', {
+            name: 'fireworks',
+            client: new OpenAI({ 
+                apiKey: process.env.FIREWORKS_API_KEY,
+                baseURL: 'https://api.fireworks.ai/inference/v1'
+            }),
+            models: {
+                fast: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
+                balanced: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
+                premium: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507'
+            },
+            costPer1M: { input: 0.22, output: 0.88 }, // Qwen pricing per 1M tokens
+            supportsResponsesAPI: false,
+            async analyze(prompt, options = {}) {
+                const request = {
+                    model: options.model || this.models.balanced,
+                    messages: [
+                        { role: 'system', content: prompt.system },
+                        { role: 'user', content: prompt.user }
+                    ],
+                    temperature: options.temperature || 0.6,
+                    max_tokens: options.maxTokens || 4096,
+                    top_p: 1,
+                    top_k: 40,
+                    presence_penalty: 0,
+                    frequency_penalty: 0
                 }
-            });
-        }
+                const response = await this.client.chat.completions.create(request);
 
-        // Mistral provider
-        if (process.env.MISTRAL_API_KEY) {
-            this.providers.set('mistral', {
-                name: 'mistral',
-                client: new OpenAI({
-                    apiKey: process.env.MISTRAL_API_KEY,
-                    baseURL: 'https://api.mistral.ai/v1'
-                }),
-                models: {
-                    fast: 'mistral-small-latest',
-                    balanced: 'ministral-8b-latest',
-                    premium: 'mistral-large-latest'
-                },
-                costPer1M: { input: 2.0, output: 6.0 },
-                supportsResponsesAPI: false,
-                async analyze(prompt, options = {}) {
-                    const response = await this.client.chat.completions.create({
-                        model: options.model || this.models.balanced,
-                        messages: [
-                            { role: 'system', content: prompt.system },
-                            { role: 'user', content: prompt.user }
-                        ],
-                        temperature: options.temperature || 0.3,
-                        max_tokens: options.maxTokens || 1000
-                    });
-                    
-                    return {
-                        content: response.choices[0].message.content,
-                        usage: response.usage,
-                        model: response.model
-                    };
-                }
-            });
-        }
+                console.log(JSON.stringify(request.messages, null, 1));
 
-        // Fireworks AI provider
-        if (process.env.FIREWORKS_API_KEY) {
-            this.providers.set('fireworks', {
-                name: 'fireworks',
-                client: new OpenAI({ 
-                    apiKey: process.env.FIREWORKS_API_KEY,
-                    baseURL: 'https://api.fireworks.ai/inference/v1'
-                }),
-                models: {
-                    fast: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
-                    balanced: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507',
-                    premium: 'accounts/fireworks/models/qwen3-235b-a22b-instruct-2507'
-                },
-                costPer1M: { input: 0.22, output: 0.88 }, // Qwen pricing per 1M tokens
-                supportsResponsesAPI: false,
-                async analyze(prompt, options = {}) {
-                    const request = {
-                        model: options.model || this.models.balanced,
-                        messages: [
-                            { role: 'system', content: prompt.system },
-                            { role: 'user', content: prompt.user }
-                        ],
-                        temperature: options.temperature || 0.6,
-                        max_tokens: options.maxTokens || 4096,
-                        top_p: 1,
-                        top_k: 40,
-                        presence_penalty: 0,
-                        frequency_penalty: 0
-                    }
-                    const response = await this.client.chat.completions.create(request);
-
-                    console.log(JSON.stringify(request.messages, null, 1));
-
-                    const messageContent = response.choices[0].message.content;
-                    
-                    console.log('✅ OpenAI structured response received:', {
-                        model: response.model,
-                        usage: response.usage,
-                        contentLength: messageContent.length,
-                        contentPreview: messageContent.substring(0, 100) + '...'
-                    });
-                    
-                    console.log('📊 Full response content:', messageContent);
-                    
-                    
-                    return {
-                        content: response.choices[0].message.content,
-                        usage: response.usage,
-                        model: response.model
-                    };
-                }
-            });
-        }
+                const messageContent = response.choices[0].message.content;
+                
+                console.log('✅ OpenAI structured response received:', {
+                    model: response.model,
+                    usage: response.usage,
+                    contentLength: messageContent.length,
+                    contentPreview: messageContent.substring(0, 100) + '...'
+                });
+                
+                console.log('📊 Full response content:', messageContent);
+                
+                
+                return {
+                    content: response.choices[0].message.content,
+                    usage: response.usage,
+                    model: response.model
+                };
+            }
+        });
+      }
     }
 
     /**

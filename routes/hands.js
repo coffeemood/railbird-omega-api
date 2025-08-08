@@ -200,8 +200,8 @@ router.post(
       // Initialize SolverLLMService with two-phase flow
       const SolverLLMService = require('../utils/SolverLLMService');
       const llmService = new SolverLLMService({
-        defaultModel: 'fireworks',
-        analysisProvider: 'fireworks',
+        defaultModel: 'openai',
+        analysisProvider: 'openai',
         enableMetrics: true,
         enableFallback: true,
         temperature: 0.3,
