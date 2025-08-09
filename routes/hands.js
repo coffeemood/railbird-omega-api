@@ -1342,7 +1342,10 @@ router.post(
       }
 
       // Initialize coaching service
-      const coachService = new CoachLLMService();
+      const coachService = new CoachLLMService({
+        provider: 'openai'
+        // provider: 'fireworks'
+      });
       
       // Continue the coaching conversation
       const response = await coachService.continueCoaching(

@@ -8,7 +8,7 @@
 require('dotenv').config();
 const OpenAI = require('openai');
 const { z } = require('zod');
-const { zodResponseFormat } = require('openai/helpers/zod');
+const { zodTextFormat } = require('openai/helpers/zod');
 const CoachChats = require('../db/collections/CoachChats');
 
 // Zod schema for coaching responses
@@ -26,7 +26,7 @@ class CoachLLMService {
         this.config = {
             temperature: config.temperature || 0.6, // Higher for more conversational
             maxTokens: config.maxTokens || 2500,
-            maxContextTokens: config.maxContextTokens || 8000, // Reserve tokens for response
+            maxContextTokens: config.maxContextTokens || 20000, // Reserve tokens for response
             maxMessagesInContext: config.maxMessagesInContext || 10,
             provider: config.provider || 'fireworks', // Default to Fireworks
             enableFallback: config.enableFallback !== false,
@@ -262,9 +262,8 @@ Response guidelines:
         // Try primary provider (Fireworks)
         const primaryProvider = this.providers.get(this.config.provider || 'fireworks');
         if (primaryProvider) {
-            console.log({ primaryProvider })
             try {
-                return await this.callProvider(primaryProvider, messages);
+              return await this.callProvider(primaryProvider, messages);
             } catch (error) {
                 console.error(`Primary provider (${this.config.provider}) failed:`, error.message);
                 
@@ -293,15 +292,23 @@ Response guidelines:
         if (provider.supportsStructured) {
             // OpenAI with structured output
             try {
-                const response = await provider.client.chat.completions.create({
-                    model: provider.model,
-                    messages: messages,
-                    temperature: this.config.temperature,
-                    max_tokens: this.config.maxTokens,
-                    response_format: zodResponseFormat(CoachingResponseSchema, "coaching_response")
+                const response = await provider.client.responses.create({
+                  model: provider.model || 'gpt-5-mini',
+                  input: messages,
+                  text: {
+                    format: zodTextFormat(CoachingResponseSchema, "coaching_response"),
+                    verbosity: 'low'
+                  },
+                  reasoning: {
+                  effort: "minimal",
+                  }
                 });
 
-                const messageContent = response.choices[0].message.content;
+          
+                console.log(JSON.stringify(messages, null, 1));
+                console.log(response)
+
+                const messageContent = response.output_text;
                 const parsedContent = JSON.parse(messageContent);
 
                 console.log(`✅ ${provider.name} structured response:`, {
@@ -319,6 +326,7 @@ Response guidelines:
                     provider: provider.name
                 };
             } catch (structuredError) {
+                console.log({ structuredError })
                 console.log('Structured output failed, falling back to regular chat...');
                 // Fall through to regular chat completion
             }
